@@ -149,3 +149,54 @@ test('RunningHub connection probe never creates a task', async () => {
     globalThis.fetch = originalFetch
   }
 })
+
+
+test('RunningHub workflow JSON lookup reads schema without creating a task or storing the key', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ url: string, options: RequestInit }> = []
+  const prompt = JSON.stringify({ '42': { class_type: 'CLIPTextEncode', inputs: { text: 'example' } } })
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options: options || {} })
+    return new Response(JSON.stringify({ code: 0, data: { prompt } }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    })
+  }
+  try {
+    const response = await app.request('/runninghub/workflow-json', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        base_url: 'https://www.runninghub.cn', api_key: 'test-only-key',
+        workflow_id: '2109907990638850050',
+      }),
+    })
+    assert.equal(response.status, 200)
+    const body = await response.json()
+    assert.deepEqual(body.data, { prompt })
+    assert.equal(JSON.stringify(body).includes('test-only-key'), false)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].url, 'https://www.runninghub.cn/api/openapi/getJsonApiFormat')
+    assert.equal(calls[0].options.method, 'POST')
+    assert.equal(calls[0].options.redirect, 'error')
+    assert.equal((calls[0].options.headers as Record<string, string>).Authorization, 'Bearer test-only-key')
+    assert.deepEqual(JSON.parse(String(calls[0].options.body)), {
+      apiKey: 'test-only-key', workflowId: '2109907990638850050',
+    })
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('RunningHub workflow JSON lookup rejects untrusted origins before sending a key', async () => {
+  const originalFetch = globalThis.fetch
+  let called = false
+  globalThis.fetch = async () => { called = true; throw new Error('must not call') }
+  try {
+    const response = await app.request('/runninghub/workflow-json', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        base_url: 'https://example.com', api_key: 'test-only-key',
+        workflow_id: '2109907990638850050',
+      }),
+    })
+    assert.equal(response.status, 400)
+    assert.equal(called, false)
+  } finally { globalThis.fetch = originalFetch }
+})

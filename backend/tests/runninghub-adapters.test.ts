@@ -184,6 +184,15 @@ test('configured mapping rejects an unavailable source before running a paid tas
   }, { id: 10, prompt: '山' }), /referenceImages\[0\]/)
 })
 
+test('configured output node accepts the documented V2 results without nodeId', () => {
+  const result = { status: 'SUCCESS', results: [
+    { outputType: 'png', url: 'https://example.com/final.png' },
+  ] }
+  assert.deepEqual(getImageAdapter('runninghub').parsePollResponse(result, {
+    ...workflowConfig, settings: { runninghub: { outputNodeId: '12' } },
+  }), { status: 'completed', imageUrl: 'https://example.com/final.png' })
+})
+
 test('configured output node does not silently save another node result', () => {
   const result = { status: 'SUCCESS', results: [
     { nodeId: '11', outputType: 'mp4', url: 'https://example.com/other.mp4' },

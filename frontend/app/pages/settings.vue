@@ -557,7 +557,35 @@
               <label class="field">
                 <span class="field-label">输出节点 ID（可选）</span>
                 <input v-model="cfgForm.runninghub.outputNodeId" class="input mono" placeholder="从工作流 JSON 查询" />
+                <span class="field-hint">仅当查询结果包含节点 ID 时按此项筛选；否则按图片或视频类型选择结果。</span>
               </label>
+              <div class="field">
+                <span class="field-label">读取工作流节点字段</span>
+                <div class="runninghub-import-actions">
+                  <button type="button" class="btn btn-ghost btn-sm" :disabled="runninghubInspecting" @click="readRunninghubWorkflow">
+                    <Loader2 v-if="runninghubInspecting" :size="12" class="animate-spin" />
+                    从 RunningHub 读取节点
+                  </button>
+                  <label class="runninghub-import-file">
+                    或导入工作流 API 格式 JSON
+                    <input class="input" type="file" accept=".json,application/json" @change="importRunninghubWorkflow" />
+                  </label>
+                </div>
+                <span class="field-hint">在线读取使用当前表单的 API Key、Base URL 和 Workflow ID，仅支持 RunningHub 官方站根地址，且不会创建生成任务。导入的文件仅在本页读取，不上传或保存原始 JSON。</span>
+              </div>
+              <div v-if="runninghubNodes.length" class="field" aria-live="polite">
+                <span class="field-label">{{ runninghubInspectLabel }}：{{ runninghubNodes.length }} 个节点</span>
+                <span class="field-hint">点击实际输入字段添加映射，然后选择对应的任务素材字段；页面不会猜测字段用途。</span>
+                <div class="runninghub-import-list">
+                  <div v-for="node in runninghubNodes" :key="node.nodeId" class="runninghub-import-node">
+                    <div class="runninghub-import-node-title"><strong>#{{ node.nodeId }}</strong><span>{{ node.classType || '未标注节点类型' }}</span></div>
+                    <div v-if="node.inputNames.length" class="runninghub-import-fields">
+                      <button v-for="fieldName in node.inputNames" :key="fieldName" type="button" class="btn btn-ghost btn-sm" @click="addImportedRunninghubMapping(node.nodeId, fieldName)">{{ fieldName }} <Plus :size="12" /></button>
+                    </div>
+                    <span v-else class="field-hint">此节点没有输入字段</span>
+                  </div>
+                </div>
+              </div>
               <div class="field">
                 <span class="field-label">节点参数映射</span>
                 <div v-for="(mapping, i) in cfgForm.runninghub.nodeMappings" :key="i" class="runninghub-mapping">
@@ -783,6 +811,7 @@ import { useTheme } from '~/composables/useTheme'
 import { providerIconUrl } from '~/composables/useProviderIcon'
 import { startTour, autoTour } from '~/composables/useTour'
 import { confirmUnifiedLanguage } from '~/composables/useUnifiedLanguage'
+import { inspectRunninghubWorkflow } from '~/utils/runninghubWorkflowImport.mjs'
 
 const { t, locale } = useI18n()
 
@@ -809,6 +838,63 @@ const huobaoSaving = ref(false)
 const huobaoRegion = ref(locale.value?.startsWith('zh') ? 'cn' : 'com')
 const huobaoSiteUrl = computed(() => `https://api.firemux.${huobaoRegion.value}`)
 const runninghubSources = ['prompt', 'size', 'referenceImages[0]', 'imageUrl', 'firstFrameUrl', 'lastFrameUrl', 'referenceImageUrls[0]', 'referenceVideoUrls[0]', 'referenceAudioUrls[0]', 'referenceFileUrl', 'duration', 'aspectRatio', 'resolution', 'seed', '$constant']
+const runninghubNodes = ref([])
+const runninghubInspectLabel = ref('')
+const runninghubInspecting = ref(false)
+function clearRunninghubInspection() {
+  runninghubNodes.value = []
+  runninghubInspectLabel.value = ''
+}
+function addImportedRunninghubMapping(nodeId, fieldName) {
+  if (cfgForm.runninghub.nodeMappings.some(mapping => mapping.nodeId === nodeId && mapping.fieldName === fieldName)) {
+    toast.warning('这个节点字段已经在映射中')
+    return
+  }
+  cfgForm.runninghub.nodeMappings.push({ nodeId, fieldName, source: '', upload: false, constant: '', valueType: 'raw', valueMapText: '' })
+}
+async function importRunninghubWorkflow(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  clearRunninghubInspection()
+  if (file.size > 10 * 1024 * 1024) { toast.warning('工作流 JSON 文件不能超过 10 MB'); return }
+  try {
+    const nodes = inspectRunninghubWorkflow(await file.text())
+    if (!cfgDialog.value || cfgForm.provider !== 'runninghub') return
+    runninghubNodes.value = nodes
+    runninghubInspectLabel.value = file.name
+  } catch {
+    toast.warning('请选择 RunningHub 导出的工作流 API 格式 JSON')
+  }
+}
+async function readRunninghubWorkflow() {
+  if (runninghubInspecting.value) return
+  const workflowId = cfgForm.runninghub.workflowId.trim()
+  const apiKey = cfgForm.api_key.trim()
+  const baseUrl = cfgForm.base_url.trim()
+  if (!/^\d+$/.test(workflowId) || !apiKey || !baseUrl) {
+    toast.warning('请先填写 Workflow ID、API Key 和 RunningHub 官方 Base URL')
+    return
+  }
+  clearRunninghubInspection()
+  runninghubInspecting.value = true
+  try {
+    const result = await aiConfigAPI.inspectRunninghubWorkflow({
+      base_url: baseUrl,
+      api_key: apiKey,
+      workflow_id: workflowId,
+    })
+    if (!cfgDialog.value || cfgForm.provider !== 'runninghub'
+      || cfgForm.runninghub.workflowId.trim() !== workflowId
+      || cfgForm.api_key.trim() !== apiKey || cfgForm.base_url.trim() !== baseUrl) return
+    runninghubNodes.value = inspectRunninghubWorkflow(result?.prompt)
+    runninghubInspectLabel.value = `RunningHub 工作流 #${workflowId}`
+  } catch {
+    toast.warning('读取工作流失败，请核对官方站地址、API Key 和 Workflow ID')
+  } finally {
+    runninghubInspecting.value = false
+  }
+}
 function newRunninghubSettings() {
   return { mode: 'workflow', workflowId: '2109907990638850050', nodeMappings: [], modelEndpoint: '', modelMappings: [], outputNodeId: '' }
 }
@@ -823,6 +909,7 @@ function loadRunninghubSettings(settings) {
   }
 }
 const cfgForm = reactive({ name: '', provider: '', api_key: '', base_url: '', models: [], service_type: 'text', priority: 0, temperature: '', runninghub: newRunninghubSettings() })
+watch(() => [cfgForm.provider, cfgForm.runninghub.workflowId], clearRunninghubInspection)
 function addRunninghubMapping(key) {
   cfgForm.runninghub[key].push(key === 'nodeMappings'
     ? { nodeId: '', fieldName: '', source: 'prompt', upload: false, constant: '', valueType: 'raw', valueMapText: '' }
@@ -913,6 +1000,7 @@ function applyProviderPreset(type, provider) {
   cfgForm.provider = provider
   cfgForm.base_url = preset.baseUrl
   cfgForm.models = [...preset.models]
+  clearRunninghubInspection()
   if (provider === 'runninghub') cfgForm.runninghub = newRunninghubSettings()
   // 配置名持久化进 DB：用 provider 英文 + 服务类型英文标识拼，不随界面语言漂移
   cfgForm.name = `${preset.label}-${type}`
@@ -975,6 +1063,7 @@ async function applyHuobaoQuickConfig() {
   }
 }
 function startAddCfg(t) {
+  clearRunninghubInspection()
   cfgEditId.value = null
   cfgTestResult.value = null
   Object.assign(cfgForm, { name: '', provider: '', api_key: '', base_url: '', models: [], service_type: t, priority: 0, temperature: '', runninghub: newRunninghubSettings() })
@@ -983,6 +1072,7 @@ function startAddCfg(t) {
   cfgDialog.value = true
 }
 function startEditCfg(c) {
+  clearRunninghubInspection()
   cfgEditId.value = c.id
   cfgTestResult.value = null
   Object.assign(cfgForm, {
@@ -1820,6 +1910,13 @@ onBeforeUnmount(stopUsagePoll)
 .btn-icon.btn-sm { width: 30px; min-width: 30px; height: 30px; min-height: 30px; }
 
 /* RunningHub mapping editor */
+.runninghub-import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.runninghub-import-file { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+.runninghub-import-file .input { width: auto; max-width: 260px; font-size: 11px; }
+.runninghub-import-list { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 7px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.runninghub-import-node { display: flex; flex-direction: column; gap: 5px; padding: 7px; border-radius: var(--radius-md); background: var(--bg-2); }
+.runninghub-import-node-title { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; font-size: 12px; }
+.runninghub-import-fields { display: flex; flex-wrap: wrap; gap: 5px; }
 .runninghub-config { display: flex; flex-direction: column; gap: 14px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-1); }
 .runninghub-mapping { display: grid; grid-template-columns: 0.7fr 1fr 1.2fr auto auto; align-items: center; gap: 6px; }
 .runninghub-mapping.model { grid-template-columns: 1fr 1.2fr auto auto; }

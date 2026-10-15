@@ -314,7 +314,9 @@ function resultUrl(result: any, kind: MediaKind, config?: AIConfig): string | nu
   const entries = Array.isArray(result?.results) ? result.results : []
   const outputNodeId = config?.settings?.runninghub?.mode === 'model'
     ? undefined : config?.settings?.runninghub?.outputNodeId
-  const candidates = outputNodeId
+  const hasNodeIds = entries.some((item: any) =>
+    item?.nodeId !== undefined && item?.nodeId !== null && item?.nodeId !== '')
+  const candidates = outputNodeId && hasNodeIds
     ? entries.filter((item: any) => String(item?.nodeId) === String(outputNodeId)) : entries
   const allowed = kind === 'image' ? IMAGE_TYPES : VIDEO_TYPES
   const chosen = candidates.find((item: any) =>

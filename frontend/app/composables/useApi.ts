@@ -5,7 +5,7 @@ async function req<T = any>(method: string, path: string, body?: any): Promise<T
   if (body) opts.body = JSON.stringify(body)
 
   const start = performance.now()
-  console.log(`%c[API] %c${method} %c${path}`, 'color:#888', 'color:#4fc3f7;font-weight:bold', 'color:#ccc', body || '')
+  console.log(`%c[API] %c${method} %c${path}`, 'color:#888', 'color:#4fc3f7;font-weight:bold', 'color:#ccc', body ? '[request body omitted]' : '')
 
   try {
     const resp = await fetch(`${BASE}${path}`, opts)
@@ -135,6 +135,7 @@ export const aiConfigAPI = {
   update: (id: number, d: any) => api.put(`/ai-configs/${id}`, d),
   del: (id: number) => api.del(`/ai-configs/${id}`),
   test: (d: any) => api.post('/ai-configs/test', d),
+  inspectRunninghubWorkflow: (d: { base_url: string; api_key: string; workflow_id: string }) => api.post<{ prompt: string }>('/ai-configs/runninghub/workflow-json', d),
 }
 
 // lang 缺省/为 zh 时读写基础版（不带 query，保持原请求形态）

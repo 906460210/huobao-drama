@@ -308,6 +308,50 @@ app.post('/test', async (c) => {
   }
 })
 
+// POST /ai-configs/runninghub/workflow-json
+// Official read-only API; this never submits a generation task or persists the draft key.
+app.post('/runninghub/workflow-json', async (c) => {
+  let body: any
+  try { body = await c.req.json() }
+  catch { return badRequest(c, '请求须为 JSON') }
+  const baseUrl = String(body?.base_url || '')
+  const apiKey = String(body?.api_key || '')
+  const workflowId = String(body?.workflow_id || '')
+  let base: URL
+  try { base = new URL(baseUrl) }
+  catch { return badRequest(c, '请使用 RunningHub 官方 Base URL') }
+  if (base.protocol !== 'https:' || !['www.runninghub.cn', 'www.runninghub.ai'].includes(base.hostname)
+    || base.port || base.username || base.password || base.search || base.hash || base.pathname !== '/') {
+    return badRequest(c, '请使用 RunningHub 官方 Base URL')
+  }
+  if (!apiKey.trim() || !/^\d+$/.test(workflowId)) {
+    return badRequest(c, '需要 API Key 和数字 Workflow ID')
+  }
+
+  try {
+    const response = await fetch(new URL('/api/openapi/getJsonApiFormat', base).toString(), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey, workflowId }),
+      redirect: 'error',
+      signal: AbortSignal.timeout(20_000),
+    })
+    if (!response.ok) throw new Error('upstream error')
+    const raw = await response.text()
+    if (raw.length > 5_000_000) throw new Error('response too large')
+    const payload = JSON.parse(raw)
+    if (payload?.code !== 0 && payload?.code !== '0') throw new Error('upstream error')
+    const prompt = payload?.data?.prompt
+    const parsed = typeof prompt === 'string' ? JSON.parse(prompt) : prompt
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('invalid workflow')
+    }
+    return success(c, { prompt })
+  } catch {
+    return c.json({ code: 502, message: '读取工作流失败，请检查 API Key、Workflow ID 和访问权限' }, 502)
+  }
+})
+
 // GET /ai-configs/:id
 app.get('/:id', async (c) => {
   const id = Number(c.req.param('id'))

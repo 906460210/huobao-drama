@@ -10,7 +10,7 @@
 
 在「设置 → AI 服务」新增图片或视频配置，选择 RunningHub。两种调用方式均需填写 API Key；密钥保存在本地数据库的服务配置中，不写入仓库文件。
 
-- **ComfyUI 工作流**：初始 Workflow ID 为 `2109907990638850050`。至少添加一条节点参数映射：节点 ID、节点字段名、任务素材字段。节点 ID 和字段名必须取自该工作流的 API 格式 JSON；本项目不预填未核实的节点。可填输出节点 ID，以免把预览图或其他节点输出误当最终结果。
+- **ComfyUI 工作流**：初始 Workflow ID 为 `2109907990638850050`。至少添加一条节点参数映射：节点 ID、节点字段名、任务素材字段。节点 ID 和字段名必须取自该工作流的 API 格式 JSON；本项目不预填未核实的节点。设置页可在填写 Key 后只读获取工作流 JSON，也可导入从 RunningHub 导出的本地 JSON，列出真实节点与字段供选择；读取和导入都不会提交生成任务。输出节点 ID 仅在 V2 查询结果包含节点 ID 时用于精确筛选；若官方响应未提供该字段，系统按图片或视频类型选择结果。
 - **模型 API**：填入该模型官方文档给出的 `/openapi/v2/...` 路径，并逐项配置请求字段与任务素材字段。不同模型没有统一创建参数；模型 API 需要符合 RunningHub 对 Enterprise Shared Key 的要求。字段名支持点路径，例如 `input.prompt` 与 `parameters.duration`。
 
 常用任务素材字段有 `prompt`、`size`、`referenceImages[0]`、`imageUrl`、`firstFrameUrl`、`lastFrameUrl`、`referenceImageUrls[0]`、`referenceVideoUrls[0]`、`referenceAudioUrls[0]`、`referenceFileUrl`、`duration`、`aspectRatio`、`resolution`、`seed`。映射源写 `$constant` 可设置固定值。每行可指定值类型，并填写 JSON 值映射；例如 `{"1080p":"1080P"}` 能对齐官方枚举，`duration` 可转成文本。模型字段名支持官方示例中的 `272##image` 等键。需要传入工作流文件名或模型上传 URL 时，勾选该映射行的「上传素材」；适配器会先调用官方上传接口，也可安全读取本地 `static/` 素材，无需为 RunningHub 配置 `PUBLIC_BASE_URL`。保存配置不会创建生成任务，RunningHub 也没有会产生费用的连接测试按钮。
