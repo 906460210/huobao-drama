@@ -396,6 +396,27 @@
                 </span>
               </div>
               <div class="agent-card-body">
+                <div class="field-row">
+                  <label class="field">
+                    <span class="field-label">文本服务配置</span>
+                    <select v-model="agentForm.config_id" class="input" @change="onAgentConfigChange">
+                      <option :value="null">跟随默认配置</option>
+                      <option v-for="config in agentTextConfigs" :key="config.id" :value="config.id">
+                        {{ config.name || config.provider }}{{ config.is_active ? '' : '（已停用）' }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span class="field-label">模型 ID</span>
+                    <select v-model="agentForm.model" class="input">
+                      <option value="">配置默认模型</option>
+                      <option v-for="model in agentModelOptions" :key="model" :value="model">{{ model }}</option>
+                      <option v-if="agentForm.model && !agentModelOptions.includes(agentForm.model)" :value="agentForm.model">{{ agentForm.model }}</option>
+                    </select>
+                    <input v-model="agentForm.model" class="input" list="agent-model-ids" placeholder="也可输入自定义模型 ID" />
+                    <datalist id="agent-model-ids"><option v-for="model in agentModelOptions" :key="model" :value="model" /></datalist>
+                  </label>
+                </div>
                 <label class="field">
                   <span class="field-label">System Prompt <span class="dim">({{ t('settings.agents.promptHint', { file: promptFileName }) }})</span>
                     <span v-if="agentPromptFallback" class="tag agent-fallback-tag">{{ t('settings.agents.langFallback') }}</span>
@@ -519,7 +540,101 @@
           </label>
           <label class="field"><span class="field-label">API Key</span><input v-model="cfgForm.api_key" class="input" type="password" placeholder="sk-..." /></label>
           <label class="field"><span class="field-label">Base URL</span><input v-model="cfgForm.base_url" class="input" placeholder="https://..." /></label>
-          <div class="field">
+          <div v-if="cfgForm.provider === 'runninghub'" class="runninghub-config">
+            <div class="field">
+              <span class="field-label">RunningHub V2 调用方式</span>
+              <select v-model="cfgForm.runninghub.mode" class="input">
+                <option value="workflow">ComfyUI 工作流</option>
+                <option value="model">模型 API</option>
+              </select>
+              <span class="field-hint">工作流节点编号和字段名称取自你自己的工作流，请按实际接口填写。</span>
+            </div>
+            <template v-if="cfgForm.runninghub.mode === 'workflow'">
+              <label class="field">
+                <span class="field-label">Workflow ID</span>
+                <input v-model="cfgForm.runninghub.workflowId" class="input mono" placeholder="2109907990638850050" />
+              </label>
+              <label class="field">
+                <span class="field-label">输出节点 ID（可选）</span>
+                <input v-model="cfgForm.runninghub.outputNodeId" class="input mono" placeholder="从工作流 JSON 查询" />
+                <span class="field-hint">仅当查询结果包含节点 ID 时按此项筛选；否则按图片或视频类型选择结果。</span>
+              </label>
+              <div class="field">
+                <span class="field-label">读取工作流节点字段</span>
+                <div class="runninghub-import-actions">
+                  <button type="button" class="btn btn-ghost btn-sm" :disabled="runninghubInspecting" @click="readRunninghubWorkflow">
+                    <Loader2 v-if="runninghubInspecting" :size="12" class="animate-spin" />
+                    从 RunningHub 读取节点
+                  </button>
+                  <label class="runninghub-import-file">
+                    或导入工作流 API 格式 JSON
+                    <input class="input" type="file" accept=".json,application/json" @change="importRunninghubWorkflow" />
+                  </label>
+                </div>
+                <span class="field-hint">在线读取使用当前表单的 API Key、Base URL 和 Workflow ID，仅支持 RunningHub 官方站根地址，且不会创建生成任务。导入的文件仅在本页读取，不上传或保存原始 JSON。</span>
+              </div>
+              <div v-if="runninghubNodes.length" class="field" aria-live="polite">
+                <span class="field-label">{{ runninghubInspectLabel }}：{{ runninghubNodes.length }} 个节点</span>
+                <span class="field-hint">点击实际输入字段添加映射，然后选择对应的任务素材字段；页面不会猜测字段用途。</span>
+                <div class="runninghub-import-list">
+                  <div v-for="node in runninghubNodes" :key="node.nodeId" class="runninghub-import-node">
+                    <div class="runninghub-import-node-title"><strong>#{{ node.nodeId }}</strong><span>{{ node.classType || '未标注节点类型' }}</span></div>
+                    <div v-if="node.inputNames.length" class="runninghub-import-fields">
+                      <button v-for="fieldName in node.inputNames" :key="fieldName" type="button" class="btn btn-ghost btn-sm" @click="addImportedRunninghubMapping(node.nodeId, fieldName)">{{ fieldName }} <Plus :size="12" /></button>
+                    </div>
+                    <span v-else class="field-hint">此节点没有输入字段</span>
+                  </div>
+                </div>
+              </div>
+              <div class="field">
+                <span class="field-label">节点参数映射</span>
+                <div v-for="(mapping, i) in cfgForm.runninghub.nodeMappings" :key="i" class="runninghub-mapping">
+                  <input v-model="mapping.nodeId" class="input" placeholder="节点 ID" aria-label="节点 ID" />
+                  <input v-model="mapping.fieldName" class="input" placeholder="节点字段名" aria-label="节点字段名" />
+                  <input v-model="mapping.source" class="input" list="runninghub-source-options" placeholder="任务素材字段" aria-label="任务素材字段" />
+                  <label class="runninghub-upload"><input v-model="mapping.upload" type="checkbox" /> 上传素材</label>
+                  <button type="button" class="btn btn-ghost btn-sm" @click="cfgForm.runninghub.nodeMappings.splice(i, 1)">移除</button>
+                  <div class="runninghub-mapping-options">
+                    <input v-if="mapping.source === '$constant'" v-model="mapping.constant" class="input" placeholder="固定值" aria-label="固定值" />
+                    <select v-model="mapping.valueType" class="input" aria-label="值类型">
+                      <option value="raw">原值</option><option value="string">文本</option><option value="number">数字</option><option value="boolean">布尔</option><option value="json">JSON</option>
+                    </select>
+                    <input v-model="mapping.valueMapText" class="input mono" placeholder='值映射 JSON，例如 {"1080p":"1080P"}' aria-label="值映射 JSON" />
+                  </div>
+                </div>
+                <button type="button" class="btn btn-ghost btn-sm" @click="addRunninghubMapping('nodeMappings')"><Plus :size="12" /> 添加映射</button>
+              </div>
+            </template>
+            <template v-else>
+              <label class="field">
+                <span class="field-label">模型 API 路径</span>
+                <input v-model="cfgForm.runninghub.modelEndpoint" class="input mono" placeholder="/openapi/v2/..." />
+                <span class="field-hint">标准模型 API 需要 RunningHub Enterprise Shared Key；路径请以你获得的官方模型接口为准。</span>
+              </label>
+              <div class="field">
+                <span class="field-label">模型请求参数映射</span>
+                <div v-for="(mapping, i) in cfgForm.runninghub.modelMappings" :key="i" class="runninghub-mapping model">
+                  <input v-model="mapping.fieldName" class="input" placeholder="请求字段名" aria-label="请求字段名" />
+                  <input v-model="mapping.source" class="input" list="runninghub-source-options" placeholder="任务素材字段" aria-label="任务素材字段" />
+                  <label class="runninghub-upload"><input v-model="mapping.upload" type="checkbox" /> 上传素材</label>
+                  <button type="button" class="btn btn-ghost btn-sm" @click="cfgForm.runninghub.modelMappings.splice(i, 1)">移除</button>
+                  <div class="runninghub-mapping-options">
+                    <input v-if="mapping.source === '$constant'" v-model="mapping.constant" class="input" placeholder="固定值" aria-label="固定值" />
+                    <select v-model="mapping.valueType" class="input" aria-label="值类型">
+                      <option value="raw">原值</option><option value="string">文本</option><option value="number">数字</option><option value="boolean">布尔</option><option value="json">JSON</option>
+                    </select>
+                    <input v-model="mapping.valueMapText" class="input mono" placeholder='值映射 JSON，例如 {"1080p":"1080P"}' aria-label="值映射 JSON" />
+                  </div>
+                </div>
+                <button type="button" class="btn btn-ghost btn-sm" @click="addRunninghubMapping('modelMappings')"><Plus :size="12" /> 添加映射</button>
+              </div>
+            </template>
+            <datalist id="runninghub-source-options">
+              <option v-for="source in runninghubSources" :key="source" :value="source" />
+            </datalist>
+            <p class="field-hint">保存配置不会创建生成任务。连接测试不会调用付费任务接口；素材勾选“上传素材”后按对应 API 上传。</p>
+          </div>
+          <div v-if="cfgForm.provider !== 'runninghub'" class="field">
             <span class="field-label">{{ t('settings.cfg.models') }}</span>
             <div v-if="cfgForm.models.length" class="model-chips">
               <span
@@ -557,7 +672,7 @@
           </div>
         </div>
         <div class="dialog-foot">
-          <button type="button" class="btn btn-ghost test-draft-btn" :disabled="cfgTesting" @click="testDraftCfg">
+          <button v-if="cfgForm.provider !== 'runninghub'" type="button" class="btn btn-ghost test-draft-btn" :disabled="cfgTesting" @click="testDraftCfg">
             <Loader2 v-if="cfgTesting" :size="12" class="animate-spin" />
             <span v-else>{{ t('settings.cfg.test') }}</span>
           </button>
@@ -696,6 +811,7 @@ import { useTheme } from '~/composables/useTheme'
 import { providerIconUrl } from '~/composables/useProviderIcon'
 import { startTour, autoTour } from '~/composables/useTour'
 import { confirmUnifiedLanguage } from '~/composables/useUnifiedLanguage'
+import { inspectRunninghubWorkflow } from '~/utils/runninghubWorkflowImport.mjs'
 
 const { t, locale } = useI18n()
 
@@ -721,7 +837,84 @@ const huobaoSaving = ref(false)
 // 火宝节点选择：默认跟随界面语言（中文→国内 .cn，其他→国外 .com），一键配置与取 Key 链接共用
 const huobaoRegion = ref(locale.value?.startsWith('zh') ? 'cn' : 'com')
 const huobaoSiteUrl = computed(() => `https://api.firemux.${huobaoRegion.value}`)
-const cfgForm = reactive({ name: '', provider: '', api_key: '', base_url: '', models: [], service_type: 'text', priority: 0, temperature: '' })
+const runninghubSources = ['prompt', 'size', 'referenceImages[0]', 'imageUrl', 'firstFrameUrl', 'lastFrameUrl', 'referenceImageUrls[0]', 'referenceVideoUrls[0]', 'referenceAudioUrls[0]', 'referenceFileUrl', 'duration', 'aspectRatio', 'resolution', 'seed', '$constant']
+const runninghubNodes = ref([])
+const runninghubInspectLabel = ref('')
+const runninghubInspecting = ref(false)
+function clearRunninghubInspection() {
+  runninghubNodes.value = []
+  runninghubInspectLabel.value = ''
+}
+function addImportedRunninghubMapping(nodeId, fieldName) {
+  if (cfgForm.runninghub.nodeMappings.some(mapping => mapping.nodeId === nodeId && mapping.fieldName === fieldName)) {
+    toast.warning('这个节点字段已经在映射中')
+    return
+  }
+  cfgForm.runninghub.nodeMappings.push({ nodeId, fieldName, source: '', upload: false, constant: '', valueType: 'raw', valueMapText: '' })
+}
+async function importRunninghubWorkflow(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file) return
+  clearRunninghubInspection()
+  if (file.size > 10 * 1024 * 1024) { toast.warning('工作流 JSON 文件不能超过 10 MB'); return }
+  try {
+    const nodes = inspectRunninghubWorkflow(await file.text())
+    if (!cfgDialog.value || cfgForm.provider !== 'runninghub') return
+    runninghubNodes.value = nodes
+    runninghubInspectLabel.value = file.name
+  } catch {
+    toast.warning('请选择 RunningHub 导出的工作流 API 格式 JSON')
+  }
+}
+async function readRunninghubWorkflow() {
+  if (runninghubInspecting.value) return
+  const workflowId = cfgForm.runninghub.workflowId.trim()
+  const apiKey = cfgForm.api_key.trim()
+  const baseUrl = cfgForm.base_url.trim()
+  if (!/^\d+$/.test(workflowId) || !apiKey || !baseUrl) {
+    toast.warning('请先填写 Workflow ID、API Key 和 RunningHub 官方 Base URL')
+    return
+  }
+  clearRunninghubInspection()
+  runninghubInspecting.value = true
+  try {
+    const result = await aiConfigAPI.inspectRunninghubWorkflow({
+      base_url: baseUrl,
+      api_key: apiKey,
+      workflow_id: workflowId,
+    })
+    if (!cfgDialog.value || cfgForm.provider !== 'runninghub'
+      || cfgForm.runninghub.workflowId.trim() !== workflowId
+      || cfgForm.api_key.trim() !== apiKey || cfgForm.base_url.trim() !== baseUrl) return
+    runninghubNodes.value = inspectRunninghubWorkflow(result?.prompt)
+    runninghubInspectLabel.value = `RunningHub 工作流 #${workflowId}`
+  } catch {
+    toast.warning('读取工作流失败，请核对官方站地址、API Key 和 Workflow ID')
+  } finally {
+    runninghubInspecting.value = false
+  }
+}
+function newRunninghubSettings() {
+  return { mode: 'workflow', workflowId: '2109907990638850050', nodeMappings: [], modelEndpoint: '', modelMappings: [], outputNodeId: '' }
+}
+function loadRunninghubSettings(settings) {
+  const raw = typeof settings === 'string' ? (() => { try { return JSON.parse(settings) } catch { return {} } })() : settings
+  const saved = raw?.runninghub || {}
+  return {
+    ...newRunninghubSettings(),
+    ...saved,
+    nodeMappings: Array.isArray(saved.nodeMappings) ? saved.nodeMappings.map(mapping => ({ ...mapping, valueType: mapping.valueType || 'raw', valueMapText: mapping.valueMap ? JSON.stringify(mapping.valueMap) : '' })) : [],
+    modelMappings: Array.isArray(saved.modelMappings) ? saved.modelMappings.map(mapping => ({ ...mapping, valueType: mapping.valueType || 'raw', valueMapText: mapping.valueMap ? JSON.stringify(mapping.valueMap) : '' })) : [],
+  }
+}
+const cfgForm = reactive({ name: '', provider: '', api_key: '', base_url: '', models: [], service_type: 'text', priority: 0, temperature: '', runninghub: newRunninghubSettings() })
+watch(() => [cfgForm.provider, cfgForm.runninghub.workflowId], clearRunninghubInspection)
+function addRunninghubMapping(key) {
+  cfgForm.runninghub[key].push(key === 'nodeMappings'
+    ? { nodeId: '', fieldName: '', source: 'prompt', upload: false, constant: '', valueType: 'raw', valueMapText: '' }
+    : { fieldName: '', source: 'prompt', upload: false, constant: '', valueType: 'raw', valueMapText: '' })
+}
 // 模型标签编辑器：首位即默认模型；输入框支持回车添加、逗号/换行批量粘贴
 const modelInput = ref('')
 function addModel() {
@@ -749,8 +942,15 @@ const serviceTypes = computed(() => [
   { type: 'image', label: t('common.serviceType.image') },
   { type: 'video', label: t('common.serviceType.video') },
 ])
-const providers = ['gemini', 'openai', 'volcengine', 'minimax', 'aliyun']
-const providerSelectOptions = computed(() => providers.map(p => ({ label: p, value: p })))
+const providers = ['gemini', 'openai', 'deepseek', 'runninghub', 'volcengine', 'minimax', 'aliyun']
+const providersByService = {
+  text: ['gemini', 'openai', 'deepseek', 'volcengine'],
+  image: ['gemini', 'openai', 'runninghub', 'volcengine'],
+  video: ['runninghub', 'volcengine', 'minimax', 'aliyun'],
+}
+const providerSelectOptions = computed(() => providers
+  .filter(provider => providersByService[cfgForm.service_type]?.includes(provider))
+  .map(provider => ({ label: provider, value: provider })))
 const serviceMeta = computed(() => ({
   text: { label: t('common.serviceType.text'), desc: t('settings.ai.meta.text') },
   image: { label: t('common.serviceType.image'), desc: t('settings.ai.meta.image') },
@@ -760,15 +960,18 @@ const providerPresets = {
   text: {
     gemini: { label: 'Gemini 官方', baseUrl: 'https://generativelanguage.googleapis.com', models: ['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-3-flash-preview'] },
     openai: { label: 'OpenAI 官方', baseUrl: 'https://api.openai.com', models: ['deepseek-v4-pro', 'gpt-5.6-terra'] },
+    deepseek: { label: 'DeepSeek 官方', baseUrl: 'https://api.deepseek.com', models: ['deepseek-flash', 'deepseek-v4-pro'] },
   },
   image: {
     gemini: { label: 'Gemini 官方', baseUrl: 'https://generativelanguage.googleapis.com', models: ['gemini-3-pro-image', 'gemini-3.1-flash-image'] },
     openai: { label: 'OpenAI 官方', baseUrl: 'https://api.openai.com', models: ['gpt-image-2'] },
+    runninghub: { label: 'RunningHub V2 工作流', baseUrl: 'https://www.runninghub.cn', models: [] },
   },
   video: {
     aliyun: { label: '阿里云百炼 Wan 3.0', baseUrl: 'https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com', models: ['wan3.0-video', 'wan3.0-video-prime'] },
     volcengine: { label: 'Seedance 2.0 官方', baseUrl: 'https://ark.cn-beijing.volces.com', models: ['doubao-seedance-2-0-mini-260615', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-2-0-260128'] },
     minimax: { label: 'MiniMax H3 官方', baseUrl: 'https://api.minimaxi.com', models: ['MiniMax-H3'] },
+    runninghub: { label: 'RunningHub V2 工作流', baseUrl: 'https://www.runninghub.cn', models: [] },
   },
 }
 const huobaoQuickConfigs = computed(() => {
@@ -797,6 +1000,8 @@ function applyProviderPreset(type, provider) {
   cfgForm.provider = provider
   cfgForm.base_url = preset.baseUrl
   cfgForm.models = [...preset.models]
+  clearRunninghubInspection()
+  if (provider === 'runninghub') cfgForm.runninghub = newRunninghubSettings()
   // 配置名持久化进 DB：用 provider 英文 + 服务类型英文标识拼，不随界面语言漂移
   cfgForm.name = `${preset.label}-${type}`
 }
@@ -858,14 +1063,16 @@ async function applyHuobaoQuickConfig() {
   }
 }
 function startAddCfg(t) {
+  clearRunninghubInspection()
   cfgEditId.value = null
   cfgTestResult.value = null
-  Object.assign(cfgForm, { name: '', provider: '', api_key: '', base_url: '', models: [], service_type: t, priority: 0, temperature: '' })
+  Object.assign(cfgForm, { name: '', provider: '', api_key: '', base_url: '', models: [], service_type: t, priority: 0, temperature: '', runninghub: newRunninghubSettings() })
   const firstPreset = presetsByType(t)[0]
   if (firstPreset) applyProviderPreset(t, firstPreset.provider)
   cfgDialog.value = true
 }
 function startEditCfg(c) {
+  clearRunninghubInspection()
   cfgEditId.value = c.id
   cfgTestResult.value = null
   Object.assign(cfgForm, {
@@ -877,6 +1084,7 @@ function startEditCfg(c) {
     service_type: c.service_type,
     priority: c.priority ?? 0,
     temperature: c.temperature ?? '',
+    runninghub: loadRunninghubSettings(c.settings),
   })
   cfgDialog.value = true
 }
@@ -914,13 +1122,46 @@ async function testExistingCfg(c) {
 async function saveCfg() {
   if (!cfgForm.provider) { toast.warning(t('settings.cfg.providerRequired')); return }
   const models = [...cfgForm.models]
+  const settings = cfgForm.provider === 'runninghub' ? { runninghub: JSON.parse(JSON.stringify(cfgForm.runninghub)) } : undefined
+  if (settings) {
+    const rh = settings.runninghub
+    if (rh.mode === 'workflow') {
+      if (!/^\d+$/.test(rh.workflowId.trim())) { toast.warning('Workflow ID 只能包含数字'); return }
+      if (!rh.nodeMappings.length) { toast.warning('请至少添加一条节点参数映射'); return }
+      if (rh.nodeMappings.some(mapping => !/^\d+$/.test(mapping.nodeId?.trim() || ''))) {
+        toast.warning('节点 ID 只能包含数字'); return
+      }
+    }
+    if (rh.mode === 'model') {
+      if (!/^\/openapi\/v2\/[A-Za-z0-9/_.-]+$/.test(rh.modelEndpoint.trim())) {
+        toast.warning('模型 API 路径须以 /openapi/v2/ 开头'); return
+      }
+      if (!rh.modelMappings.length) { toast.warning('请至少添加一条模型参数映射'); return }
+    }
+    for (const mapping of [...rh.nodeMappings, ...rh.modelMappings]) {
+      if (!mapping.fieldName?.trim() || !mapping.source?.trim() || ('nodeId' in mapping && !mapping.nodeId?.trim())
+        || (mapping.source === '$constant' && mapping.constant === '')) {
+        toast.warning('请完整填写 RunningHub 映射行'); return
+      }
+      if (mapping.valueMapText?.trim()) {
+        try {
+          const valueMap = JSON.parse(mapping.valueMapText)
+          if (!valueMap || typeof valueMap !== 'object' || Array.isArray(valueMap)) throw new Error('invalid')
+          mapping.valueMap = valueMap
+        } catch {
+          toast.warning('值映射须为 JSON 对象'); return
+        }
+      } else delete mapping.valueMap
+      delete mapping.valueMapText
+    }
+  }
   const temperature = cfgForm.temperature === '' || cfgForm.temperature === null ? null : Number(cfgForm.temperature)
   if (temperature !== null && (!Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
     toast.warning(t('settings.cfg.tempInvalid')); return
   }
   try {
-    if (cfgEditId.value) await aiConfigAPI.update(cfgEditId.value, { name: cfgForm.name, provider: cfgForm.provider, api_key: cfgForm.api_key, base_url: cfgForm.base_url, model: models, priority: cfgForm.priority, temperature })
-    else await aiConfigAPI.create({ service_type: cfgForm.service_type, provider: cfgForm.provider, name: cfgForm.name || `${cfgForm.provider}-${cfgForm.service_type}`, api_key: cfgForm.api_key, base_url: cfgForm.base_url, model: models, priority: cfgForm.priority, temperature })
+    if (cfgEditId.value) await aiConfigAPI.update(cfgEditId.value, { name: cfgForm.name, provider: cfgForm.provider, api_key: cfgForm.api_key, base_url: cfgForm.base_url, model: models, priority: cfgForm.priority, temperature, settings })
+    else await aiConfigAPI.create({ service_type: cfgForm.service_type, provider: cfgForm.provider, name: cfgForm.name || `${cfgForm.provider}-${cfgForm.service_type}`, api_key: cfgForm.api_key, base_url: cfgForm.base_url, model: models, priority: cfgForm.priority, temperature, settings })
     cfgDialog.value = false; toast.success(t('common.saved')); loadCfgs()
   } catch (e) { toastError(e) }
 }
@@ -930,7 +1171,15 @@ const agentCfgs = ref([])
 const agentPane = ref('prompt')   // 右侧子 tab：prompt | skills
 const agentSaving = ref(false)
 const agentSaved = ref(null)
-const agentForm = reactive({ system_prompt: '' })
+const agentForm = reactive({ system_prompt: '', config_id: null, model: '' })
+const agentTextConfigs = computed(() => cfgs.value.filter(config => config.service_type === 'text' && config.is_active))
+const agentModelOptions = computed(() => {
+  const config = agentTextConfigs.value.find(item => item.id === Number(agentForm.config_id))
+  return Array.isArray(config?.model) ? config.model : []
+})
+function onAgentConfigChange() {
+  agentForm.model = agentModelOptions.value[0] || ''
+}
 
 const agentDefs = computed(() => [
   { type: 'script_rewriter', label: t('settings.agents.scriptRewriter'), icon: '📝' },
@@ -954,6 +1203,8 @@ async function loadAgentPrompt(type) {
     const cfg = await promptAPI.get(type, editLang.value)
     if (selectedAgent.value === type) {
       agentForm.system_prompt = cfg.system_prompt || ''
+      agentForm.config_id = cfg.config_id ?? null
+      agentForm.model = cfg.model || ''
       agentPromptFallback.value = editLang.value !== 'zh' && !!cfg.is_default
     }
     agentSaved.value = null
@@ -966,6 +1217,8 @@ async function resetAgentPrompt(type) {
     await loadAgents()
     const cfg = await promptAPI.get(type, editLang.value)
     agentForm.system_prompt = cfg.system_prompt || ''
+    agentForm.config_id = cfg.config_id ?? null
+    agentForm.model = cfg.model || ''
     agentPromptFallback.value = editLang.value !== 'zh' && !!cfg.is_default
     toast.success(t('settings.agents.promptReset'))
   } catch (e) { toastError(e) }
@@ -978,6 +1231,8 @@ async function saveAgentCfg(type) {
     await promptAPI.update(type, {
       name: agentDefs.value.find(a => a.type === type)?.label || type,
       system_prompt: agentForm.system_prompt,
+      config_id: agentForm.config_id,
+      model: agentForm.model.trim() || null,
     }, editLang.value)
     await loadAgents()
     agentPromptFallback.value = false
@@ -1653,6 +1908,21 @@ onBeforeUnmount(stopUsagePoll)
 .config-switch { display: inline-flex; flex-shrink: 0; cursor: pointer; }
 .config-switch input:focus-visible + .switch { box-shadow: 0 0 0 3.5px var(--button-focus); }
 .btn-icon.btn-sm { width: 30px; min-width: 30px; height: 30px; min-height: 30px; }
+
+/* RunningHub mapping editor */
+.runninghub-import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.runninghub-import-file { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+.runninghub-import-file .input { width: auto; max-width: 260px; font-size: 11px; }
+.runninghub-import-list { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 7px; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.runninghub-import-node { display: flex; flex-direction: column; gap: 5px; padding: 7px; border-radius: var(--radius-md); background: var(--bg-2); }
+.runninghub-import-node-title { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; font-size: 12px; }
+.runninghub-import-fields { display: flex; flex-wrap: wrap; gap: 5px; }
+.runninghub-config { display: flex; flex-direction: column; gap: 14px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-1); }
+.runninghub-mapping { display: grid; grid-template-columns: 0.7fr 1fr 1.2fr auto auto; align-items: center; gap: 6px; }
+.runninghub-mapping.model { grid-template-columns: 1fr 1.2fr auto auto; }
+.runninghub-mapping-options { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 6px; }
+.runninghub-upload { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 11px; color: var(--text-2); }
+@media (max-width: 650px) { .runninghub-mapping, .runninghub-mapping.model { grid-template-columns: 1fr 1fr; } }
 
 /* Agent */
 .agent-card { overflow: hidden; }

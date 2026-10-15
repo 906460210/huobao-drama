@@ -18,6 +18,7 @@ import { loadAgentSkills, skillWorkspaces } from './skills.js'
 import { loadAgentPromptFile, loadBasePromptFile } from './prompts.js'
 import { buildLanguageDirective } from './language.js'
 import { getContentLanguageFromRC } from './context.js'
+import { agentDispatchRoutes, getAgentDispatchRoute, resolveAgentTextSelection, type AgentToolSet } from './dispatch.js'
 
 // Default prompts (used when workspace/prompts/<type>.md 文件缺失时兜底)
 export const DEFAULT_PROMPTS: Record<string, { name: string; instructions: string }> = {
@@ -151,7 +152,7 @@ video_prompt 规则（硬约束）：
   },
 }
 
-export const validAgentTypes = Object.keys(DEFAULT_PROMPTS)
+export const validAgentTypes = Object.keys(agentDispatchRoutes)
 
 // Agent 每一步都会重新解析模型，相同端点只打一次日志避免刷屏
 let lastLoggedTextEndpointKey = ''
@@ -191,7 +192,7 @@ function openaiThinkingOffPatch(): Record<string, any> {
 }
 
 function createThinkingOffFetch(providerName: string, baseURL: string): typeof fetch | undefined {
-  if (!thinkingOffEnabled || isOfficialTextHost(baseURL)) return undefined
+  if (!thinkingOffEnabled || providerName === 'deepseek' || isOfficialTextHost(baseURL)) return undefined
   const openaiPatch = openaiThinkingOffPatch()
 
   return async (input: any, init?: any) => {
@@ -291,10 +292,17 @@ function createMaxTokensFetch(providerName: string, inner?: typeof fetch): typeo
   }
 }
 
-async function getModel(fileModel: string | undefined, modelOverride?: string, textConfigId?: number) {
-  // 请求可指定文本配置（含其 provider/baseUrl/apiKey），否则回退到当前启用配置
-  const textConfig = (textConfigId ? await getConfigById(textConfigId) : null) || await getTextConfig()
-  const modelName = modelOverride || fileModel || textConfig.model
+async function getModel(fileModel: string | undefined, fileConfigId?: number | null, modelOverride?: string, textConfigId?: number) {
+  const selection = resolveAgentTextSelection(
+    { model: fileModel, configId: fileConfigId ?? undefined },
+    { model: modelOverride, configId: textConfigId },
+  )
+  const selectedConfig = selection.configId
+    ? await getConfigById(selection.configId, { serviceType: 'text' })
+    : null
+  if (selection.configId && !selectedConfig) throw new Error('所选 Agent 文本配置不存在或未启用')
+  const textConfig = selectedConfig || await getTextConfig()
+  const modelName = selection.model || textConfig.model
   const providerName = textConfig.provider.toLowerCase()
   const resolvedBaseURL = getTextProviderBaseUrl(textConfig)
   const temperature = textConfig.temperature ?? null
@@ -314,7 +322,8 @@ async function getModel(fileModel: string | undefined, modelOverride?: string, t
   const tempFetch = temperature !== null
     ? createTemperatureFetch(providerName, temperature, thinkingOffFetch)
     : thinkingOffFetch
-  const fetchImpl = isOfficialOpenAIHost(resolvedBaseURL)
+  // DeepSeek's official OpenAI-compatible endpoint must not receive gateway-only extras.
+  const fetchImpl = providerName === 'deepseek' || isOfficialOpenAIHost(resolvedBaseURL)
     ? tempFetch
     : createMaxTokensFetch(providerName, tempFetch)
 
@@ -335,11 +344,11 @@ async function getModel(fileModel: string | undefined, modelOverride?: string, t
   return provider.chat(modelName)
 }
 
-const AGENT_TOOLS: Record<string, Record<string, any>> = {
-  script_rewriter: scriptTools,
-  extractor: extractTools,
-  storyboard_breaker: storyboardTools,
-  prompt_generator: {
+const TOOL_SETS: Record<AgentToolSet, Record<string, any>> = {
+  script: scriptTools,
+  extract: extractTools,
+  storyboard: storyboardTools,
+  prompt: {
     ...imagePromptTools,
     readStoryboardContext: storyboardTools.readStoryboardContext,
     updateStoryboard: storyboardTools.updateStoryboard,
@@ -369,7 +378,7 @@ function buildModel(type: string) {
     const promptFile = await loadBasePromptFile(type)
     const modelOverride = requestContext?.get('modelOverride' as never) as string | undefined
     const textConfigId = requestContext?.get('textConfigId' as never) as number | undefined
-    return getModel(promptFile?.model || undefined, modelOverride, textConfigId)
+    return getModel(promptFile?.model || undefined, promptFile?.configId, modelOverride, textConfigId)
   }
 }
 
@@ -382,7 +391,7 @@ export const agentRegistry: Record<string, Agent> = Object.fromEntries(
       name: DEFAULT_PROMPTS[type].name,
       instructions: buildInstructions(type),
       model: buildModel(type),
-      tools: AGENT_TOOLS[type],
+      tools: TOOL_SETS[getAgentDispatchRoute(type)!.toolSet],
       workspace: skillWorkspaces[type],
       skillsFormat: 'markdown',
     }),
