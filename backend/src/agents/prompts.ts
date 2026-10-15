@@ -4,6 +4,7 @@
  *   ---
  *   name: 分镜拆解
  *   model: ""        # 可选，覆盖文本模型；空 = 用 AI 服务默认
+ *   config_id:       # 可选，固定该 Agent 使用的文本配置；不存 API Key
  *   ---
  *   <系统提示词正文>
  * 文件即唯一事实来源；文件缺失时由调用方回退到代码默认值。
@@ -13,6 +14,7 @@ import { skillsManagerWorkspace } from './skills.js'
 export interface AgentPromptFile {
   name: string
   model: string
+  configId?: number | null
   instructions: string
 }
 
@@ -26,6 +28,7 @@ export function parsePromptFile(raw: string): AgentPromptFile {
   const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/)
   let name = ''
   let model = ''
+  let configId: number | null = null
   let body = raw
   if (fmMatch) {
     const fm = fmMatch[1]
@@ -35,14 +38,17 @@ export function parsePromptFile(raw: string): AgentPromptFile {
     }
     name = get('name')
     model = get('model')
+    const rawConfigId = get('config_id')
+    const parsedConfigId = Number(rawConfigId)
+    configId = /^[1-9]\d*$/.test(rawConfigId) && Number.isSafeInteger(parsedConfigId) ? parsedConfigId : null
     body = raw.slice(fmMatch[0].length)
   }
-  return { name, model, instructions: body.trim() }
+  return { name, model, configId, instructions: body.trim() }
 }
 
 /** 序列化为 prompt 文件内容（供保存接口使用） */
 export function serializePromptFile(file: AgentPromptFile): string {
-  return `---\nname: ${file.name}\nmodel: "${file.model}"\n---\n\n${file.instructions.trim()}\n`
+  return `---\nname: ${file.name}\nmodel: "${file.model}"\nconfig_id: ${file.configId ?? ''}\n---\n\n${file.instructions.trim()}\n`
 }
 
 /** 读取指定路径的 prompt 文件；文件不存在或解析失败返回 null */
@@ -71,5 +77,5 @@ export async function loadAgentPromptFile(agentType: string, lang?: string | nul
   if (!lang || lang === 'zh') return base
   const localized = await readPromptFile(promptFilePath(agentType, lang))
   if (!localized) return base
-  return { ...localized, model: base?.model || '' }
+  return { ...localized, model: base?.model || '', configId: base?.configId ?? null }
 }

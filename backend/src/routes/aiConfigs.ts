@@ -17,10 +17,55 @@ function normalizeTemperature(v: any): number | null {
   return n
 }
 
+function parseSettings(raw: string | null): Record<string, any> {
+  if (!raw) return {}
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function normalizeSettings(value: unknown): Record<string, any> {
+  if (value === null || value === undefined) return {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('settings 须为对象')
+  const settings = { ...value as Record<string, any> }
+  if (!('runninghub' in settings)) return settings
+  const runninghub = settings.runninghub
+  if (!runninghub || typeof runninghub !== 'object' || Array.isArray(runninghub)
+    || !['workflow', 'model'].includes(runninghub.mode)) {
+    throw new Error('RunningHub mode 须为 workflow 或 model')
+  }
+  for (const key of ['workflowId', 'modelEndpoint', 'outputNodeId']) {
+    if (runninghub[key] !== undefined && typeof runninghub[key] !== 'string') {
+      throw new Error('RunningHub ' + key + ' 须为字符串')
+    }
+  }
+  for (const key of ['nodeMappings', 'modelMappings']) {
+    if (runninghub[key] === undefined) continue
+    if (!Array.isArray(runninghub[key])) throw new Error('RunningHub ' + key + ' 须为数组')
+    for (const mapping of runninghub[key]) {
+      if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)
+        || typeof mapping.fieldName !== 'string' || !mapping.fieldName.trim()
+        || typeof mapping.source !== 'string' || !mapping.source.trim()
+        || (key === 'nodeMappings' && (typeof mapping.nodeId !== 'string' || !mapping.nodeId.trim()))
+        || (mapping.upload !== undefined && typeof mapping.upload !== 'boolean')
+        || (mapping.source === '$constant' && !('constant' in mapping))
+        || (mapping.valueType !== undefined && !['raw', 'string', 'number', 'boolean', 'json'].includes(mapping.valueType))
+        || (mapping.valueMap !== undefined && (!mapping.valueMap || typeof mapping.valueMap !== 'object' || Array.isArray(mapping.valueMap)))) {
+        throw new Error('RunningHub ' + key + ' 含无效映射')
+      }
+    }
+  }
+  return settings
+}
+
 /** 把 settings JSON 中的 temperature 透出为顶层字段，便于前端直接读写 */
 function withParsedFields(r: any) {
   return {
     ...toSnakeCase(r),
+    settings: parseSettings(r.settings),
     model: r.model ? JSON.parse(r.model) : [],
     temperature: parseConfigTemperature(r.settings),
   }
@@ -58,6 +103,15 @@ function buildProbe(serviceType: string, provider: string, baseUrl: string, mode
       url: url.toString(),
       headers: geminiHeaders(apiKey, true),
       body: { contents: [{ parts: [{ text: 'hi' }] }] },
+    }
+  }
+
+  if (p === 'deepseek') {
+    return {
+      method: 'GET',
+      url: joinProviderUrl(baseUrl, '', '/models'),
+      headers: bearerHeaders(apiKey),
+      body: undefined,
     }
   }
 
@@ -138,13 +192,16 @@ app.post('/', async (c) => {
     return badRequest(c, '不支持的 service_type/provider')
   }
 
-  let temperature: number | null = null
-  if ('temperature' in body) {
-    try {
-      temperature = normalizeTemperature(body.temperature)
-    } catch {
-      return badRequest(c, 'temperature 须为 0 到 2 之间的数字')
+  let settings: Record<string, any>
+  try {
+    settings = normalizeSettings(body.settings)
+    if ('temperature' in body) {
+      const temperature = normalizeTemperature(body.temperature)
+      if (temperature === null) delete settings.temperature
+      else settings.temperature = temperature
     }
+  } catch (error: any) {
+    return badRequest(c, error.message)
   }
 
   const res = await db.insert(schema.aiServiceConfigs).values({
@@ -156,7 +213,7 @@ app.post('/', async (c) => {
     model: JSON.stringify(body.model || []),
     priority: body.priority || 0,
     isActive: true,
-    settings: temperature !== null ? JSON.stringify({ temperature }) : null,
+    settings: Object.keys(settings).length ? JSON.stringify(settings) : null,
     createdAt: ts,
     updatedAt: ts,
   })
@@ -175,6 +232,18 @@ app.post('/test', async (c) => {
   }
   if (!isOfficialProvider(body.service_type, body.provider)) {
     return badRequest(c, '不支持的 service_type/provider')
+  }
+
+  if (body.provider === 'runninghub') {
+    return success(c, {
+      ok: false,
+      reachable: false,
+      status: 0,
+      method: 'NONE',
+      url: redactUrl(body.base_url),
+      message: 'RunningHub 没有无费用的任务创建测试；请保存配置并在实际使用时检查状态',
+      response_preview: '',
+    })
   }
 
   const model = Array.isArray(body.model) ? body.model[0] : body.model
@@ -270,18 +339,18 @@ app.put('/:id', async (c) => {
   if ('model' in body) updates.model = JSON.stringify(body.model)
   if ('priority' in body) updates.priority = body.priority
   if ('is_active' in body) updates.isActive = body.is_active
-  if ('temperature' in body) {
-    let temperature: number | null
+  if ('settings' in body || 'temperature' in body) {
+    let settings = parseSettings(existing.settings)
     try {
-      temperature = normalizeTemperature(body.temperature)
-    } catch {
-      return badRequest(c, 'temperature 须为 0 到 2 之间的数字')
+      if ('settings' in body) settings = { ...settings, ...normalizeSettings(body.settings) }
+      if ('temperature' in body) {
+        const temperature = normalizeTemperature(body.temperature)
+        if (temperature === null) delete settings.temperature
+        else settings.temperature = temperature
+      }
+    } catch (error: any) {
+      return badRequest(c, error.message)
     }
-    // 与已有 settings 合并，清空的 temperature 从 JSON 中移除
-    let settings: Record<string, any> = {}
-    try { settings = existing.settings ? JSON.parse(existing.settings) : {} } catch { settings = {} }
-    if (temperature === null) delete settings.temperature
-    else settings.temperature = temperature
     updates.settings = Object.keys(settings).length ? JSON.stringify(settings) : null
   }
 

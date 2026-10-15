@@ -9,6 +9,7 @@ import { now } from '../utils/response.js'
 import { downloadFile, fetchImageAsCompressedDataUrl, generateImageThumb, readImageAsCompressedDataUrl, readImageAsDataUrl, saveBase64Image } from '../utils/storage.js'
 import { extractVideoPoster } from '../utils/video-poster.js'
 import { getImageAdapter, getVideoAdapter } from './adapters/registry'
+import { planTaskRecovery, pollFetchOptions } from './task-recovery.js'
 import type { AIConfig } from './adapters/types'
 import { logTaskError, logTaskPayload, logTaskProgress, logTaskStart, logTaskSuccess, logTaskWarn, redactUrl } from '../utils/task-logger.js'
 
@@ -165,7 +166,7 @@ async function createTask(
     type,
     ...fields,
     provider: config.provider,
-    params: JSON.stringify(params),
+    params: JSON.stringify({ ...params, configId: config.id }),
     status: 'processing',
     createdAt: ts,
     updatedAt: ts,
@@ -208,7 +209,7 @@ async function processTask(id: number, config: AIConfig) {
     if (type === 'image') {
       const adapter = getImageAdapter(config.provider)
       const resolvedReferenceImages = await normalizeReferenceImages(params.referenceImages)
-      ;({ url, method, headers, body } = adapter.buildGenerateRequest(config, {
+      ;({ url, method, headers, body } = await adapter.buildGenerateRequest(config, {
         id: record.id,
         model: record.model,
         prompt: record.prompt,
@@ -223,10 +224,16 @@ async function processTask(id: number, config: AIConfig) {
       const resolvedLastFrameUrl = await normalizeVideoReferenceUrl(params.lastFrameUrl)
       const resolvedReferenceImageUrls = await normalizeVideoReferenceUrls(params.referenceImageUrls)
       // 参考视频/音频文件较大，不适合 dataURL 内联，需解析为公网可访问 URL
-      const resolvedReferenceVideoUrls = resolvePublicMediaUrls(params.referenceVideoUrls, 'video')
-      const resolvedReferenceAudioUrls = resolvePublicMediaUrls(params.referenceAudioUrls, 'audio')
-      const resolvedReferenceFileUrl = resolvePublicMediaUrl(params.referenceFileUrl, 'file')
-      ;({ url, method, headers, body } = adapter.buildGenerateRequest(config, {
+      const resolvedReferenceVideoUrls = config.provider === 'runninghub'
+        ? (Array.isArray(params.referenceVideoUrls) ? params.referenceVideoUrls : [])
+        : resolvePublicMediaUrls(params.referenceVideoUrls, 'video')
+      const resolvedReferenceAudioUrls = config.provider === 'runninghub'
+        ? (Array.isArray(params.referenceAudioUrls) ? params.referenceAudioUrls : [])
+        : resolvePublicMediaUrls(params.referenceAudioUrls, 'audio')
+      const resolvedReferenceFileUrl = config.provider === 'runninghub'
+        ? params.referenceFileUrl
+        : resolvePublicMediaUrl(params.referenceFileUrl, 'file')
+      ;({ url, method, headers, body } = await adapter.buildGenerateRequest(config, {
         id: record.id,
         model: record.model,
         prompt: record.prompt,
@@ -269,6 +276,7 @@ async function processTask(id: number, config: AIConfig) {
       headers,
       body: isMultipart ? (body as FormData) : JSON.stringify(body),
       signal: AbortSignal.timeout(600_000),
+      ...(config.provider === 'runninghub' ? { redirect: 'error' as const } : {}),
     })
 
     if (!resp.ok) throw new Error(`API error ${resp.status}: ${await resp.text()}`)
@@ -296,8 +304,9 @@ async function processTask(id: number, config: AIConfig) {
         throw new Error('No image URL or base64 data in response')
       }
 
+      if (!taskId) throw new Error('Async provider returned no task ID')
       await markPolling(id, taskId)
-      pollTask(record, config, taskId!)
+      void pollTask(record, config, taskId).catch(err => failTask(id, err.message))
       return
     }
 
@@ -310,8 +319,9 @@ async function processTask(id: number, config: AIConfig) {
       return
     }
 
+    if (!taskId) throw new Error('Async provider returned no task ID')
     await markPolling(id, taskId)
-    pollTask(record, config, taskId!)
+    void pollTask(record, config, taskId).catch(err => failTask(id, err.message))
   } catch (err: any) {
     await failTask(id, err.message)
   }
@@ -332,6 +342,78 @@ async function failTask(id: number, message: string) {
 }
 
 type SysTaskRecord = typeof schema.sysTask.$inferSelect
+type ResumeTaskResult = 'resumed' | 'already-running' | 'completed' | 'not-recoverable'
+const recoveringTaskIds = new Set<number>()
+
+/**
+ * Resume an existing remote task or download its saved result.
+ * This path never calls a provider's create endpoint.
+ */
+export async function resumeTask(id: number, options: { fromStartup?: boolean } = {}): Promise<ResumeTaskResult> {
+  const [record] = await db.select().from(schema.sysTask).where(eq(schema.sysTask.id, id))
+  if (!record) throw new Error('Task not found')
+  if (record.status === 'completed') return 'completed'
+  if (recoveringTaskIds.has(id) || (record.status === 'processing' && !options.fromStartup)) return 'already-running'
+
+  // Claim the task before any asynchronous configuration lookup.
+  recoveringTaskIds.add(id)
+  let handedOff = false
+  try {
+    const action = planTaskRecovery(record)
+    if (action === 'fail') {
+      await failTask(id, '服务中断前未取得远端任务 ID；提交结果不确定，不会自动重新提交，请到服务商控制台核对')
+      return 'not-recoverable'
+    }
+
+    let config: AIConfig | null = null
+    if (action === 'poll') {
+      const params = parseTaskParams(record.params)
+      const configId = Number(params.configId)
+      if (!Number.isSafeInteger(configId) || configId <= 0) {
+        await failTask(id, '任务缺少原配置 ID，无法安全查询远端状态；不会自动重新提交')
+        return 'not-recoverable'
+      }
+      config = await getConfigById(configId, { includeInactive: true })
+      if (!config || config.provider !== record.provider) {
+        await failTask(id, '原模型配置不可用，无法安全查询远端状态；不会自动重新提交')
+        return 'not-recoverable'
+      }
+    }
+
+    await db.update(schema.sysTask)
+      .set({ status: 'processing', errorMsg: null, updatedAt: now() })
+      .where(eq(schema.sysTask.id, id))
+
+    const work = async () => {
+      if (action === 'download') {
+        if (record.type === 'image') await handleImageComplete(record, record.resultUrl!)
+        else if (record.type === 'video') await handleVideoComplete(record, record.resultUrl!, parseTaskParams(record.params).duration)
+        else throw new Error('Unsupported task type')
+      } else if (action === 'poll') {
+        await pollTask(record, config!, record.taskId!)
+      }
+    }
+    handedOff = true
+    void work()
+      .catch(err => failTask(id, err instanceof Error ? err.message : String(err)))
+      .finally(() => recoveringTaskIds.delete(id))
+    return 'resumed'
+  } finally {
+    if (!handedOff) recoveringTaskIds.delete(id)
+  }
+}
+
+/** Restore only tasks that already have an upstream ID or a saved result URL. */
+export async function resumeInterruptedTasks(): Promise<void> {
+  const rows = await db.select().from(schema.sysTask).where(eq(schema.sysTask.status, 'processing'))
+  for (const row of rows) {
+    try {
+      await resumeTask(row.id, { fromStartup: true })
+    } catch (err) {
+      await failTask(row.id, err instanceof Error ? err.message : String(err))
+    }
+  }
+}
 
 async function pollTask(record: SysTaskRecord, config: AIConfig, taskId: string) {
   const type = record.type as TaskType
@@ -347,7 +429,8 @@ async function pollTask(record: SysTaskRecord, config: AIConfig, taskId: string)
     }
     await new Promise(r => setTimeout(r, profile.intervalMs))
     try {
-      const { url, method, headers } = adapter.buildPollRequest(config, taskId)
+      const request = adapter.buildPollRequest(config, taskId)
+      const { url, method } = request
       logTaskProgress(label, 'poll-request', {
         id: record.id,
         taskId,
@@ -359,16 +442,12 @@ async function pollTask(record: SysTaskRecord, config: AIConfig, taskId: string)
       const remainingMs = profile.maxDurationMs
         ? Math.max(1_000, profile.maxDurationMs - (Date.now() - startedAt))
         : 600_000
-      const resp = await fetch(url, {
-        method,
-        headers,
-        signal: AbortSignal.timeout(remainingMs),
-      })
+      const resp = await fetch(url, pollFetchOptions(request, remainingMs, config.provider === 'runninghub'))
       if (!resp.ok) continue
       const result = await resp.json() as any
 
       // 图片/视频 PollResponse 结构不同，这里统一按 any 取值后按 type 分支
-      const pollResp: any = adapter.parsePollResponse(result)
+      const pollResp: any = adapter.parsePollResponse(result, config)
 
       if (pollResp.status === 'completed') {
         if (type === 'image') {
@@ -411,6 +490,7 @@ async function pollTask(record: SysTaskRecord, config: AIConfig, taskId: string)
 }
 
 async function handleImageComplete(record: SysTaskRecord, imageUrl: string) {
+  await db.update(schema.sysTask).set({ resultUrl: imageUrl, updatedAt: now() }).where(eq(schema.sysTask.id, record.id))
   const localPath = await downloadFile(imageUrl, 'images')
   // 列表页缩略图（前端按命名约定推导地址，失败不影响主流程）
   await generateImageThumb(localPath)
@@ -459,6 +539,7 @@ async function writeBackImageAssets(record: SysTaskRecord, localPath: string) {
 }
 
 async function handleVideoComplete(record: SysTaskRecord, videoUrl: string, duration: number | null | undefined) {
+  await db.update(schema.sysTask).set({ resultUrl: videoUrl, updatedAt: now() }).where(eq(schema.sysTask.id, record.id))
   const localPath = await downloadFile(videoUrl, 'videos')
   // 海报帧供列表/封面展示，避免前端为显示首帧缓冲整个视频
   await extractVideoPoster(localPath)

@@ -13,6 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { Workspace, LocalFilesystem } from '@mastra/core/workspace'
+import { agentDispatchRoutes, getAgentDispatchRoute } from './dispatch.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -35,30 +36,17 @@ try {
   console.warn(`[skills] 工作目录创建失败（只读环境？）: ${(err as Error).message}`)
 }
 
-/** 每个 Agent 注册的 skill 目录（相对 workspace/skills/，含子规范目录；目录名需符合 Agent Skills 规范：小写+连字符） */
-const AGENT_SKILL_MAP: Record<string, string[]> = {
-  script_rewriter: ['script-rewriter'],
-  extractor: ['extractor'],
-  storyboard_breaker: ['storyboard-breaker'],
-  prompt_generator: [
-    'prompt-generator/character-prompt',
-    'prompt-generator/scene-prompt',
-    'prompt-generator/prop-prompt',
-    'prompt-generator/video-prompt',
-  ],
-}
-
 /** 每个 Agent 的 Workspace（filesystem 工作目录 + 原生技能注册）
  *  skills 用动态解析器按目录前缀匹配：设置页新建的子技能无需重启即可被发现 */
 export const skillWorkspaces: Record<string, Workspace> = Object.fromEntries(
-  Object.entries(AGENT_SKILL_MAP).map(([agentType, prefixes]) => [
+  Object.entries(agentDispatchRoutes).map(([agentType, route]) => [
     agentType,
     new Workspace({
       id: `workspace-${agentType}`,
       name: `${agentType} workspace`,
       filesystem: localFilesystem(),
       skills: () => scanSkillPaths().filter(p =>
-        prefixes.some(prefix => p === `skills/${prefix}` || p.startsWith(`skills/${prefix}/`))),
+        route.skillPrefixes.some(prefix => p === `skills/${prefix}` || p.startsWith(`skills/${prefix}/`))),
     }),
   ]),
 )
@@ -115,12 +103,12 @@ async function readLocalizedSkill(relPath: string, lang: string): Promise<string
 }
 
 /** 读取 Agent 专属技能全文（经 workspace.skills API，保持原注入格式）
- *  AGENT_SKILL_MAP 的目录按前缀匹配：目录自身及其子目录下所有 SKILL.md 都会注入，
+ *  dispatch 路由的目录按前缀匹配：目录自身及其子目录下所有 SKILL.md 都会注入，
  *  因此设置页新建的子技能（如 storyboard-breaker/xxx）无需改代码即可生效。
  *  lang 非 zh 时逐技能优先 SKILL.<lang>.md，缺失回退基础版（中文） */
 export async function loadAgentSkills(agentType: string, lang?: string | null): Promise<string> {
   const workspace = skillWorkspaces[agentType]
-  const prefixes = AGENT_SKILL_MAP[agentType] || []
+  const prefixes = getAgentDispatchRoute(agentType)?.skillPrefixes || []
   if (!workspace || !prefixes.length) return ''
 
   const allPaths = scanSkillPaths().map(p => p.replace(/^skills\//, ''))

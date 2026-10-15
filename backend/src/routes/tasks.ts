@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, created, badRequest } from '../utils/response.js'
-import { generateImage, generateVideo } from '../services/generation.js'
+import { generateImage, generateVideo, resumeTask } from '../services/generation.js'
 import { getActiveConfig, getConfigById } from '../services/ai.js'
 import { getDramaStylePrompt } from '../services/style-preset.js'
 import { logTaskError, logTaskPayload, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
@@ -212,6 +212,19 @@ app.get('/:id', async (c) => {
   const [row] = await db.select().from(schema.sysTask)
     .where(eq(schema.sysTask.id, id))
   return success(c, row || null)
+})
+
+// POST /tasks/:id/resume — 只恢复已有上游任务或已保存结果，绝不再次提交生成
+app.post('/:id/resume', async (c) => {
+  const id = Number(c.req.param('id'))
+  if (!Number.isSafeInteger(id) || id <= 0) return badRequest(c, '无效任务 ID')
+  try {
+    const state = await resumeTask(id)
+    if (state === 'not-recoverable') return badRequest(c, '此任务无法安全恢复，请核对服务商控制台')
+    return success(c, { id, state })
+  } catch (err: any) {
+    return badRequest(c, err.message)
+  }
 })
 
 // GET /tasks — 按 type / storyboard_id / drama_id 过滤

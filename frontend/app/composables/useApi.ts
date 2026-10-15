@@ -93,6 +93,7 @@ export const propAPI = {
 export const taskAPI = {
   generate: (d: any) => api.post('/tasks', d),
   get: (id: number) => api.get(`/tasks/${id}`),
+  resume: (id: number) => api.post(`/tasks/${id}/resume`, {}),
   del: (id: number) => api.del(`/tasks/${id}`),
   list: (params?: { type?: 'image' | 'video'; drama_id?: number; storyboard_id?: number }) => {
     const query = new URLSearchParams()

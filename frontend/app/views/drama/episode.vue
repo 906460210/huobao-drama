@@ -1067,6 +1067,11 @@
                 <span :class="['dot', genTaskStateClass(row.status) === 'done' && 'ok', genTaskStateClass(row.status) === 'pending' && 'pending']" />
                 {{ genTaskStatusLabel(row.status) }}
               </span>
+              <button v-if="row.kind !== 'merge' && row.status === 'failed' && (row.taskId || row.resultUrl)"
+                class="btn btn-ghost btn-sm" @click.stop="resumeGenerationTask(row)">恢复</button>
+              <button v-if="row.kind === 'video' && row.provider === 'runninghub' && row.status === 'failed'
+                && !row.taskId && !row.resultUrl && row.storyboardId"
+                class="btn btn-ghost btn-sm" @click.stop="newVideoAfterReview(row)">核对后新建（可能计费）</button>
             </div>
           </div>
         </aside>
@@ -1437,6 +1442,8 @@ import {
 import { api, dramaAPI, episodeAPI, storyboardAPI, characterAPI, sceneAPI, propAPI, taskAPI, mergeAPI, aiConfigAPI, uploadAPI } from '~/composables/useApi'
 import { startTour, autoTour } from '~/composables/useTour'
 import { useAgent } from '~/composables/useAgent'
+import { configModels, collectModelOptions, bareModelName, ownerConfigId, hasMultiConfigs } from '~/utils/model-options'
+import { videoRetryAction } from '~/utils/task-recovery'
 import { toastError, mapError, MODERATION_RE } from '~/composables/useToast'
 import LocaleSwitcher from '~/components/LocaleSwitcher.vue'
 
@@ -2070,41 +2077,6 @@ async function changeEpisodeResolution(val) {
 // 画面比例在创建项目时固定，视频生成统一使用
 const dramaAspectRatio = computed(() => drama.value?.aspect_ratio || drama.value?.aspectRatio || '16:9')
 
-// 生成可选模型列表：配置中的模型数组（首位为配置默认）；API 可能返回数组或 JSON 字符串
-function configModels(cfg) {
-  const raw = cfg?.model
-  if (!raw) return []
-  if (Array.isArray(raw)) return raw.filter(Boolean)
-  try { const m = JSON.parse(raw); return Array.isArray(m) ? m.filter(Boolean) : [m].filter(Boolean) } catch { return [raw].filter(Boolean) }
-}
-// 汇总该类型全部启用配置的模型（按 厂商+模型 去重，按优先级排序），选中模型时连同所属配置一起调用
-// 选中值使用 'provider/model' 复合键：同名模型可能来自不同厂商（如中转站与官方），必须区分
-function collectModelOptions(cfgs) {
-  const seen = new Set()
-  const out = []
-  const sorted = [...cfgs].filter(c => c.is_active).sort((a, b) => (b.priority || 0) - (a.priority || 0))
-  for (const c of sorted) {
-    for (const m of configModels(c)) {
-      const key = `${c.provider}/${m}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      out.push({ key, model: m, provider: c.provider, configId: c.id, configName: c.name || c.provider })
-    }
-  }
-  return out
-}
-// 复合键 → 裸模型名（后端适配器按厂商校验模型名，不能带 provider 前缀）
-function bareModelName(key) {
-  if (!key) return ''
-  const i = key.indexOf('/')
-  return i >= 0 ? key.slice(i + 1) : key
-}
-function ownerConfigId(options, key) {
-  return key ? (options.find(o => o.key === key)?.configId || undefined) : undefined
-}
-function hasMultiConfigs(options) {
-  return new Set(options.map(o => o.configId)).size > 1
-}
 const textModelOptions = computed(() => collectModelOptions(textConfigs.value))
 const imageModelOptions = computed(() => collectModelOptions(imageConfigs.value))
 const videoModelOptions = computed(() => collectModelOptions(videoConfigs.value))
@@ -2127,7 +2099,8 @@ const refImageLimit = computed(() => isWan3Video.value ? 10 : 9)
 const effectiveVideoModelLabel = computed(() => {
   const explicit = bareModelName(videoModel.value)
   if (explicit) return explicit
-  return configModels(selectedVideoConfig.value)[0] || ''
+  return configModels(selectedVideoConfig.value)[0]
+    || (selectedVideoConfig.value?.provider === 'runninghub' ? selectedVideoConfig.value.name || 'RunningHub' : '')
 })
 const episodeResolutionLabel = computed(() =>
   resolutionOptions.value.find(o => o.key === episodeResolution.value)?.model || episodeResolution.value)
@@ -2190,7 +2163,7 @@ const videoModelMultiCfg = computed(() => hasMultiConfigs(videoModelOptions.valu
 // Production step helpers
 // ========== 任务列表面板 ==========
 async function loadGenTasks() {
-  if (!epId.value) return
+  if (!epId.value) return false
   try {
     const data = await taskAPI.listByEpisode(epId.value)
     genTasks.value = data?.tasks || []
@@ -2226,7 +2199,8 @@ async function loadGenTasks() {
     }
     pendingVideoIds.value = [...pending]
     failedVideoMessages.value = failed
-  } catch { /* 静默失败,不打断其他刷新 */ }
+    return true
+  } catch { return false }
 }
 
 function stopGenTasksPolling() {
@@ -2272,6 +2246,9 @@ const genTaskRows = computed(() => {
     key: `task-${t.id}`,
     kind: t.type, // image | video
     id: t.id,
+    taskId: t.task_id || null,
+    resultUrl: t.result_url || null,
+    storyboardId: t.storyboard_id || null,
     targetLabel: genTaskTargetLabel(t),
     provider: t.provider || '',
     model: t.model || '',
@@ -2298,6 +2275,24 @@ const genTaskRows = computed(() => {
   }))
   return [...taskRows, ...mergeRows].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
 })
+
+function newVideoAfterReview(row) {
+  const storyboard = sbs.value.find(item => item.id === row.storyboardId)
+  if (storyboard) genVid(storyboard, { forceNew: true })
+}
+
+async function resumeGenerationTask(row) {
+  try {
+    await taskAPI.resume(row.id)
+    await loadGenTasks()
+    toast.success('正在恢复已有任务')
+    if (row.kind === 'video' && row.storyboardId) {
+      pollVideoGeneration(row.id, row.storyboardId)
+    }
+  } catch (error) {
+    toastError(error)
+  }
+}
 
 function genTaskKindLabel(kind) {
   return kind === 'image' ? t('common.serviceType.image') : kind === 'video' ? t('common.serviceType.video') : t('episode.tasks.mergeKind')
@@ -3251,7 +3246,44 @@ function uploadAssetImage(kind, id) {
   })
 }
 
+function latestVideoTask(storyboardId) {
+  return genTasks.value
+    .filter(task => task.type === 'video' && task.storyboard_id === storyboardId)
+    .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')) || b.id - a.id)[0]
+}
+
+async function maybeResumeRunningHubVideo(sb, opts = {}) {
+  if (!await loadGenTasks()) {
+    toast.warning('无法确认已有任务状态，请稍后重试')
+    return true
+  }
+  const task = latestVideoTask(sb.id)
+  const action = videoRetryAction(task)
+  if (action === 'generate') return false
+  if (action === 'review') {
+    toast.warning('此 RunningHub 任务缺少远端任务 ID；请先到服务商控制台核对，避免重复计费')
+    return true
+  }
+  try {
+    delete failedVideoMessages.value[sb.id]
+    if (!isPendingVideo(sb.id)) pendingVideoIds.value.push(sb.id)
+    await taskAPI.resume(task.id)
+    if (!opts.silent) toast.success('正在恢复已有 RunningHub 任务')
+    await refresh()
+    pollVideoGeneration(task.id, sb.id)
+  } catch (error) {
+    pendingVideoIds.value = pendingVideoIds.value.filter(id => id !== sb.id)
+    failedVideoMessages.value = {
+      ...failedVideoMessages.value,
+      [sb.id]: error.message || t('episode.vid.genFailed'),
+    }
+    toastError(error)
+  }
+  return true
+}
+
 async function genVid(sb, opts = {}) {
+  if (!opts.forceNew && await maybeResumeRunningHubVideo(sb, opts)) return
   const referenceImages = getShotReferenceImages(sb)
   // 参考素材完全来自分镜绑定的角色/场景/道具图片
   const params = {

@@ -9,29 +9,40 @@ import { joinProviderUrl } from './adapters/url.js'
 export type ServiceType = 'text' | 'image' | 'video'
 
 export interface AIConfig {
+  id?: number
   provider: string
   baseUrl: string
   apiKey: string
   model: string
+  /** Provider-specific optional configuration, excluding API credentials. */
+  settings?: Record<string, unknown>
   /** 采样温度，null 表示不设置（跟随服务商默认）。存于 ai_service_configs.settings JSON */
   temperature?: number | null
 }
 
-/** 从 settings JSON 解析 temperature；非法值一律视为未设置 */
-export function parseConfigTemperature(settingsRaw: string | null | undefined): number | null {
-  if (!settingsRaw) return null
+/** Parse optional provider settings without accepting arrays or scalar JSON. */
+export function parseConfigSettings(settingsRaw: string | null | undefined): Record<string, unknown> {
+  if (!settingsRaw) return {}
   try {
-    const t = JSON.parse(settingsRaw)?.temperature
-    return typeof t === 'number' && Number.isFinite(t) ? t : null
+    const parsed: unknown = JSON.parse(settingsRaw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {}
   } catch {
-    return null
+    return {}
   }
 }
 
+/** 从 settings JSON 解析 temperature；非法值一律视为未设置 */
+export function parseConfigTemperature(settingsRaw: string | null | undefined): number | null {
+  const t = parseConfigSettings(settingsRaw).temperature
+  return typeof t === 'number' && Number.isFinite(t) ? t : null
+}
+
 export const officialProviders: Record<ServiceType, readonly string[]> = {
-  text: ['openai', 'gemini', 'volcengine'],
-  image: ['openai', 'gemini', 'volcengine'],
-  video: ['volcengine', 'minimax', 'aliyun'],
+  text: ['openai', 'gemini', 'volcengine', 'deepseek'],
+  image: ['openai', 'gemini', 'volcengine', 'runninghub'],
+  video: ['volcengine', 'minimax', 'aliyun', 'runninghub'],
 }
 
 export function isOfficialProvider(serviceType?: string | null, provider?: string | null): boolean {
@@ -42,7 +53,7 @@ export function isOfficialProvider(serviceType?: string | null, provider?: strin
 export function getTextProviderBaseUrl(config: AIConfig) {
   const provider = config.provider.toLowerCase()
 
-  if (provider === 'openai') {
+  if (provider === 'openai' || provider === 'deepseek') {
     return joinProviderUrl(config.baseUrl, '/v1', '')
   }
 
@@ -87,10 +98,12 @@ export async function getActiveConfig(serviceType: ServiceType): Promise<AIConfi
     })
   }
   return {
+    id: active.id,
     provider: active.provider || '',
     baseUrl: active.baseUrl,
     apiKey: active.apiKey,
     model: models[0] || '',
+    settings: parseConfigSettings(active.settings),
     temperature: parseConfigTemperature(active.settings),
   }
 }
@@ -113,10 +126,10 @@ export async function getActiveConfigId(serviceType: ServiceType): Promise<numbe
   return rows[0]?.id ?? null
 }
 
-export async function getConfigById(id: number): Promise<AIConfig | null> {
+export async function getConfigById(id: number, options: { includeInactive?: boolean; serviceType?: ServiceType } = {}): Promise<AIConfig | null> {
   const [row] = await db.select().from(schema.aiServiceConfigs)
     .where(eq(schema.aiServiceConfigs.id, id))
-  if (!row || !row.isActive) {
+  if (!row || (!row.isActive && !options.includeInactive) || (options.serviceType && row.serviceType !== options.serviceType)) {
     logTaskWarn('AIConfig', 'config-by-id-missing', { configId: id })
     return null
   }
@@ -140,10 +153,12 @@ export async function getConfigById(id: number): Promise<AIConfig | null> {
     })
   }
   return {
+    id: row.id,
     provider: row.provider || '',
     baseUrl: row.baseUrl,
     apiKey: row.apiKey,
     model: models[0] || '',
+    settings: parseConfigSettings(row.settings),
     temperature: parseConfigTemperature(row.settings),
   }
 }

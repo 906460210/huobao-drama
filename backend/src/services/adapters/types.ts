@@ -10,7 +10,7 @@ export interface ImageProviderAdapter {
    * @param config AI 配置 { baseUrl, apiKey, model }
    * @param record 图片生成记录
    */
-  buildGenerateRequest(config: AIConfig, record: ImageGenerationRecord): ProviderRequest
+  buildGenerateRequest(config: AIConfig, record: ImageGenerationRecord): ProviderRequest | Promise<ProviderRequest>
 
   /**
    * 解析生成响应，判断是同步还是异步
@@ -27,7 +27,7 @@ export interface ImageProviderAdapter {
   /**
    * 解析轮询响应
    */
-  parsePollResponse(result: any): ImagePollResponse
+  parsePollResponse(result: any, config?: AIConfig): ImagePollResponse
 
   /**
    * 从响应中提取图片 URL（用于直接下载）
@@ -48,13 +48,13 @@ export interface ImageProviderAdapter {
 export interface VideoProviderAdapter {
   provider: string
 
-  buildGenerateRequest(config: AIConfig, record: VideoGenerationRecord): ProviderRequest
+  buildGenerateRequest(config: AIConfig, record: VideoGenerationRecord): ProviderRequest | Promise<ProviderRequest>
 
   parseGenerateResponse(result: any): VideoGenResponse
 
   buildPollRequest(config: AIConfig, taskId: string): ProviderRequest
 
-  parsePollResponse(result: any): VideoPollResponse
+  parsePollResponse(result: any, config?: AIConfig): VideoPollResponse
 
   extractVideoUrl(result: any): string | null
 }
@@ -74,10 +74,12 @@ export interface ProviderRequest {
 }
 
 export interface AIConfig {
+  id?: number
   provider: string
   baseUrl: string
   apiKey: string
   model: string
+  settings?: Record<string, any>
 }
 
 export interface ImageGenerationRecord {
