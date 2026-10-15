@@ -1,0 +1,59 @@
+name: Phase 1 checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Focused backend tests
+        run: >-
+          ./node_modules/.bin/tsx --test
+          tests/ai-config-settings.test.ts
+          tests/deepseek-agent-routing.test.ts
+          tests/runninghub-adapters.test.ts
+          tests/task-recovery.test.mjs
+          tests/task-resume.integration.test.ts
+          tests/official-provider-adapters.test.mjs
+      - run: npm run typecheck
+      - run: npm run build
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Focused frontend tests
+        run: >-
+          node --test
+          tests/ai-advanced-settings.test.mjs
+          tests/runninghub-model-selection.test.mjs
+          tests/runninghub-workflow-import.test.mjs
+          tests/task-retry-choice.test.mjs
+      - run: npm run generate
