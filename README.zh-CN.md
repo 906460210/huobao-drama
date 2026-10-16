@@ -120,6 +120,7 @@ data/       — 生成资源文件与 SQLite 数据库
 |---|---|---|
 | `SQLITE_PATH` | `<仓库根>/data/huobao.sqlite3` | SQLite 数据库文件位置 |
 | `PORT` | `5679` | 后端服务端口 |
+| `HUOBAO_BIND_HOST` | `127.0.0.1` | 后端监听地址；默认仅本机可访问 |
 | `STORAGE_PATH` | `<仓库根>/data/static` | 生成文件存储目录 |
 | `HUOBAO_DATA_DIR` | — | 桌面版由 Electron 主进程注入（userData 数据根） |
 | `WORKSPACE_PATH` | `backend/workspace` | Agent 技能/提示词目录（桌面版指向 userData 可写副本） |
@@ -128,6 +129,8 @@ data/       — 生成资源文件与 SQLite 数据库
 | `PUBLIC_BASE_URL` | — | Seedance 引用本地参考资源时所需的公网地址（服务器部署用） |
 
 > **说明**：AI 服务的 API Key、Base URL 和模型参数全部在 Web 界面的「设置」页配置并入库，不在配置文件/环境变量中维护。
+
+> **本地安全默认**：后端默认只监听 `127.0.0.1`。当前应用没有内建用户鉴权，页面、API 和 `/static/` 素材都包含私人数据；不要把后端端口直接发布到公网或局域网。`HUOBAO_BIND_HOST=0.0.0.0` 仅供已配置独立访问控制的网络环境使用。
 
 ### 📥 安装依赖
 
@@ -360,7 +363,7 @@ cd desktop && npm run dev  # 打包后端 bundle 并以 Electron 窗口运行
 
 ---
 
-### 🏭 服务器部署方式
+### 🏭 服务器部署方式（后端仅本机访问）
 
 ```bash
 # 1. 构建前端
@@ -382,68 +385,25 @@ frontend/dist/              # 前端构建产物
 data/                       # 数据目录（首次运行自动创建）
 ```
 
-#### Nginx 反向代理
+#### 公网访问
 
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
+当前应用没有内建用户鉴权。需要远程访问时，直接运行的后端须监听 `127.0.0.1`（Docker 则保持宿主机端口绑定 `127.0.0.1`），并在前面配置 TLS 反向代理和访问认证；认证须覆盖页面、所有 `/api/v1/` 路由和 `/static/` 素材。如果 Nginx 单独用 `alias` 提供 `/static/`，该位置也必须受认证保护。认证凭证应在服务器上生成并存放于仓库外。完成这些配置前，不要直接开放 `5679` 端口。
 
-    # 参考视频/音频上传最大 50MB
-    client_max_body_size 100m;
-
-    # 生成的图片/视频直连磁盘，不经过 Node：sendfile 零拷贝 + 长缓存
-    # （产物按 uuid 命名、内容不变，可安全 immutable 缓存）
-    location /static/ {
-        alias /path/to/huobao-drama/data/static/;
-        sendfile on;
-        tcp_nopush on;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    location / {
-        proxy_pass http://localhost:5679;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-}
-```
+Seedance 使用本地参考视频、音频或文件时，`PUBLIC_BASE_URL` 生成的 URL 必须能被上游读取。对 `/static/` 全面加认证后，上游无法直接读取这些 URL；不要为此公开整个素材目录。此场景需另行提供受限、限时的媒体访问方式，或使用上游可读取的外部素材 URL。
 
 > 媒体加载优化：生成图片时后端会自动产出 400px 缩略图（`*_thumb.webp`）供列表页加载，视频会抽取海报帧（`*_poster.jpg`）作为封面，前端仅在点开大图/播放时才加载原文件。历史存量文件可在 `backend/` 下执行 `npm run backfill-artwork` 一次性补齐。
 
-### 🐳 Docker 部署（含应用内更新）
+### 🐳 Docker 部署（从本 fork 源码构建）
 
-**方式一：预构建镜像（免克隆、免构建）**：多架构镜像（`linux/amd64` + `linux/arm64`），x86 服务器与 ARM 设备自动匹配
-
-```bash
-docker pull huobao/huobao-drama:4.0.6
-
-docker run -d \
-  --name huobao-drama \
-  -p 5679:5679 \
-  -v huobao-data:/app/data \
-  --restart unless-stopped \
-  huobao/huobao-drama:4.0.6
-```
-
-**方式二：docker compose（源码构建 + Watchtower 应用内更新）**：根目录提供一体化 `Dockerfile`（前端 generate + 后端依赖/运行时三阶段，后端与服务器部署一致走 tsx）与 `docker-compose.yml`（应用 + Watchtower）：
+本 fork 使用根目录的 `Dockerfile` 和 `docker-compose.yml` 从源码构建，不使用上游预构建镜像或 Watchtower 自动更新。启动和以后更新时，在本 fork 的仓库目录执行：
 
 ```bash
-# 1. 配置环境（Watchtower 令牌，app 与 watchtower 两侧必须一致）
-cp .env.example .env   # 修改 WATCHTOWER_TOKEN
-
-# 2. 构建并启动（发布时注入版本号，供「关于更新」比对）
-HUOBAO_VERSION=4.0.5 docker compose up -d --build
-
-# 3. 访问 http://localhost:5679
+docker compose up -d --build --remove-orphans
 ```
 
-- **数据持久化**：命名卷 `huobao-data` 挂载 `/app/data`（SQLite + 生成的图片/视频 + workspace/skills，更新镜像不丢数据）
-- **应用内更新**：compose 自带 [Watchtower](https://containrrr.dev/watchtower/) sidecar（`--label-enable` 只更新标记容器，`--cleanup` 清旧镜像，每天自检一次）。设置页「关于更新」可检查新版本并「立即更新」——后端经 Watchtower HTTP API 触发，拉新镜像重建容器，几分钟后刷新页面即可
-- **手动模式**：`docker-compose.yml` 中删除 app 的 `HUOBAO_WATCHTOWER_*` 两个环境变量（或整个 watchtower 服务）后，「关于更新」退化为新版本提示 + 手动命令 `docker compose pull && docker compose up -d`
-- **发布镜像**：`docker buildx build --platform linux/amd64,linux/arm64 --build-arg HUOBAO_VERSION=x.y.z -t huobao/huobao-drama:x.y.z -t huobao/huobao-drama:latest --push .`，版本清单与桌面版共用 GitHub Releases 的 `latest.json`（可用 `HUOBAO_UPDATE_FEED` 覆盖）
+在 Docker 宿主机访问 `http://127.0.0.1:5679`。Compose 只把容器端口发布到宿主机的 `127.0.0.1:5679`；命名卷 `huobao-data` 挂载 `/app/data`，保留 SQLite、生成素材和 workspace。更新前先获取本 fork 的新源码，再重新执行上述命令。`--remove-orphans` 会清理旧版 Compose 的 Watchtower 容器，也会移除同一 Compose 项目中的其他旧服务；如有自定义服务请先核对。
+
+不要把端口映射改为 `5679:5679` 或 `0.0.0.0:5679:5679`。公网使用须按上面的要求配置 TLS 和覆盖页面、API、素材的认证。[Docker 官方文档](https://docs.docker.com/engine/network/port-publishing/)指出，Engine 28.0.0 之前的版本即使发布到 `127.0.0.1`，同一局域网的设备也可能访问该端口；旧版本还需用防火墙限制访问。
 
 ---
 

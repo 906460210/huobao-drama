@@ -171,6 +171,7 @@ function startBackend(): void {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PORT: String(backendPort),
+    HUOBAO_BIND_HOST: '127.0.0.1',
     HUOBAO_DESKTOP: '1',
     // 数据目录单一来源：重启/迁移后只需改 currentDataDir
     HUOBAO_DATA_DIR: currentDataDir,
