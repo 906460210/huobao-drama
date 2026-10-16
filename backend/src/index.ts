@@ -34,7 +34,7 @@ const app = new Hono()
 
 // Middleware
 app.use('*', cors({
-  origin: ['http://localhost:3013', 'http://localhost:5679'],
+  origin: ['http://127.0.0.1:3013', 'http://127.0.0.1:5679', 'http://localhost:3013', 'http://localhost:5679'],
   credentials: true,
 }))
 app.use('*', requestLogger)
@@ -84,9 +84,13 @@ app.use('*', serveStatic({ root: distPath }))
 app.get('*', serveStatic({ root: distPath, path: 'index.html' }))
 
 const port = Number(process.env.PORT || 5679)
-console.log(`🚀 Huobao Drama TS server on http://localhost:${port}`)
+const bindHost = process.env.HUOBAO_BIND_HOST?.trim() || '127.0.0.1'
+if (!['127.0.0.1', '0.0.0.0'].includes(bindHost)) {
+  throw new Error('HUOBAO_BIND_HOST must be 127.0.0.1 or 0.0.0.0')
+}
+console.log(`🚀 Huobao Drama TS server on http://${bindHost}:${port}`)
 
 // 只续查已有远端 taskId 或重下已保存结果；未知提交结果不自动重新生成。
 await resumeInterruptedTasks().catch(err => console.error('恢复中断任务失败:', err?.message))
 
-serve({ fetch: app.fetch, port })
+serve({ fetch: app.fetch, port, hostname: bindHost })

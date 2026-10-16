@@ -120,6 +120,7 @@ No config files — everything is set via environment variables (all have defaul
 |---|---|---|
 | `SQLITE_PATH` | `<repo>/data/huobao.sqlite3` | SQLite database file location |
 | `PORT` | `5679` | Backend service port |
+| `HUOBAO_BIND_HOST` | `127.0.0.1` | Backend listen address; local access only by default |
 | `STORAGE_PATH` | `<repo>/data/static` | Generated-file storage directory |
 | `HUOBAO_DATA_DIR` | — | Injected by the Electron main process (userData data root) |
 | `WORKSPACE_PATH` | `backend/workspace` | Agent skills/prompts directory (desktop: writable copy under userData) |
@@ -128,6 +129,8 @@ No config files — everything is set via environment variables (all have defaul
 | `PUBLIC_BASE_URL` | — | Public URL Seedance needs to reference local assets (server deployments) |
 
 > **Note**: AI service API keys, base URLs, and model parameters are all configured in the web UI "Settings" page and stored in the database — never in config files or environment variables.
+
+> **Local-only security default**: The backend listens on `127.0.0.1` by default. The app has no built-in user authentication; its pages, API, and `/static/` media contain private data. Do not expose the backend port directly to the internet or LAN. Set `HUOBAO_BIND_HOST=0.0.0.0` only in a network environment with separate access controls.
 
 ### 📥 Installation
 
@@ -359,7 +362,7 @@ cd desktop && npm run dev  # bundle the backend and run in an Electron window
 
 ---
 
-### 🏭 Server Deployment
+### 🏭 Server Deployment (local-only backend)
 
 ```bash
 # 1. Build the frontend
@@ -382,69 +385,25 @@ frontend/dist/              # frontend build output
 data/                       # data directory (auto-created on first run)
 ```
 
-#### Nginx Reverse Proxy
+#### Public access
 
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
+The app has no built-in user authentication. For remote access, bind a directly run backend to `127.0.0.1` (or keep the Docker host port on `127.0.0.1`) and put a TLS reverse proxy with authentication in front of it. Authentication must cover the pages, every `/api/v1/` route, and `/static/` media. If Nginx serves `/static/` through a separate `alias` location, protect that location too. Generate and store authentication credentials on the server, outside the repository. Do not open port `5679` directly before this is configured.
 
-    # Max 50MB for reference video/audio uploads
-    client_max_body_size 100m;
-
-    # Generated images/videos served straight from disk, bypassing Node:
-    # sendfile zero-copy + long-lived caching
-    # (files are uuid-named and immutable, so immutable caching is safe)
-    location /static/ {
-        alias /path/to/huobao-drama/data/static/;
-        sendfile on;
-        tcp_nopush on;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    location / {
-        proxy_pass http://localhost:5679;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-}
-```
+When Seedance uses local reference video, audio, or files, upstream services must be able to read the URLs built from `PUBLIC_BASE_URL`. Protecting all of `/static/` prevents those reads; do not make the entire media directory public to work around this. This case needs a separate, limited, time-bound media access method, or externally hosted reference URLs that the upstream service can read.
 
 > Media loading optimization: the backend automatically generates 400px thumbnails (`*_thumb.webp`) for list pages and extracts poster frames (`*_poster.jpg`) as video covers — the frontend only loads original files when opening the full image or playing. To backfill historical files, run `npm run backfill-artwork` under `backend/`.
 
-### 🐳 Docker Deployment (with in-app updates)
+### 🐳 Docker Deployment (build from this fork's source)
 
-**Option A — prebuilt image (no clone, no build):** multi-arch (`linux/amd64` + `linux/arm64`), x86 servers and ARM devices match automatically
-
-```bash
-docker pull huobao/huobao-drama:4.0.6
-
-docker run -d \
-  --name huobao-drama \
-  -p 5679:5679 \
-  -v huobao-data:/app/data \
-  --restart unless-stopped \
-  huobao/huobao-drama:4.0.6
-```
-
-**Option B — docker compose (source build + Watchtower in-app updates):** the repo root provides an all-in-one `Dockerfile` (three stages: frontend generate + backend dependencies + runtime; the backend runs via tsx just like server deployment) and `docker-compose.yml` (app + Watchtower):
+This fork builds from the root `Dockerfile` and `docker-compose.yml`. It does not use upstream prebuilt images or Watchtower automatic updates. Run this from the fork's repository directory for the first start and after source updates:
 
 ```bash
-# 1. Configure the environment (Watchtower token — must match on the app and watchtower sides)
-cp .env.example .env   # edit WATCHTOWER_TOKEN
-
-# 2. Build and start (inject a version at publish time for "About & Updates" comparison)
-HUOBAO_VERSION=4.0.5 docker compose up -d --build
-
-# 3. Visit http://localhost:5679
+docker compose up -d --build --remove-orphans
 ```
 
-- **Data persistence**: the named volume `huobao-data` mounts `/app/data` (SQLite + generated images/videos + workspace/skills) — image updates don't lose data
-- **In-app updates**: the compose file ships a [Watchtower](https://containrrr.dev/watchtower/) sidecar (`--label-enable` only updates labeled containers, `--cleanup` removes old images, daily self-check). "Settings → About & Updates" can check for new versions and "Update Now" — the backend triggers it via the Watchtower HTTP API, which pulls the new image and rebuilds the container; refresh the page after a few minutes
-- **Manual mode**: remove the app's two `HUOBAO_WATCHTOWER_*` env vars (or the whole watchtower service) from `docker-compose.yml` — "About & Updates" then degrades to a new-version notice + manual `docker compose pull && docker compose up -d`
-- **Publishing images**: `docker buildx build --platform linux/amd64,linux/arm64 --build-arg HUOBAO_VERSION=x.y.z -t huobao/huobao-drama:x.y.z -t huobao/huobao-drama:latest --push .` — the version manifest is shared with the desktop app via `latest.json` on GitHub Releases (overridable with `HUOBAO_UPDATE_FEED`)
+Visit `http://127.0.0.1:5679` on the Docker host. Compose publishes the container port only on the host's `127.0.0.1:5679`. The `huobao-data` named volume mounts `/app/data` and retains SQLite, generated media, and the workspace. Get the new source for this fork before rebuilding to update. `--remove-orphans` removes the old Compose Watchtower container and any other orphaned service in the same Compose project; check custom services before running it.
+
+Do not change the port mapping to `5679:5679` or `0.0.0.0:5679:5679`. Public access requires TLS and authentication covering pages, API, and media as described above. [Docker's port-publishing documentation](https://docs.docker.com/engine/network/port-publishing/) notes that on Engine versions older than 28.0.0, devices on the same LAN may reach ports published to `127.0.0.1`; add firewall restrictions on older engines.
 
 ---
 

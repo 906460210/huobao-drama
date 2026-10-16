@@ -5,7 +5,7 @@
  * - 当前版本：构建时注入 HUOBAO_VERSION（Docker ARG / 环境变量），缺省回退 package.json
  * - 一键更新：仅在配置 Watchtower（HUOBAO_WATCHTOWER_URL）时可用——容器不可变，
  *   容器内自更新是反模式，正确路径是由 Watchtower 拉新镜像并重建本容器；
- *   未配置时前端展示手动更新指引（docker compose pull && up -d）
+ *   未配置时前端展示手动更新指引（docker compose up -d --build --remove-orphans）
  */
 import { readFileSync } from 'fs'
 import path from 'path'

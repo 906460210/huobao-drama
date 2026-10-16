@@ -350,8 +350,8 @@
       "serverApply": "Update now",
       "serverApplyStarted": "Update triggered: Watchtower will pull the new image and recreate the container. Refresh in a few minutes.",
       "serverApplyFailed": "Failed to trigger update",
-      "serverManualHint": "Server deployment: run this in the deploy directory:",
-      "serverNote": "Note: with Watchtower configured, Docker deployments can update in one click (pulls the new image and recreates the container); otherwise run the command shown above manually."
+      "serverManualHint": "Source-built Docker deployment: get the latest source from this fork, then run in its repository directory:",
+      "serverNote": "This fork builds its Docker image from source. Get the latest source before rebuilding; --remove-orphans removes the old Compose Watchtower container. Without HUOBAO_UPDATE_FEED, the version check reads upstream releases and does not track this fork."
     },
     "agents": {
       "promptHint": "saved as {file}",

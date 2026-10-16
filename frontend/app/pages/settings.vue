@@ -307,7 +307,7 @@
                 </div>
                 <!-- 服务器手动模式：无 Watchtower，给出更新命令 -->
                 <div v-if="!desktopBridge && serverUpdateMode === 'manual'" class="config-sub">
-                  {{ t('settings.about.serverManualHint') }} <span class="mono">docker compose pull && docker compose up -d</span>
+                  {{ t('settings.about.serverManualHint') }} <span class="mono">docker compose up -d --build --remove-orphans</span>
                 </div>
               </div>
               <!-- 桌面版：下载更新包 -->

@@ -1,5 +1,7 @@
 # 第一期：DeepSeek 与 RunningHub V2
 
+> 安全提示：当前应用没有内置用户登录，设置接口会向已连接的客户端返回保存的 API Key。后端默认仅监听本机；不要把服务端口直接开放到公网。公网使用前须用 TLS 反向代理认证保护页面、API 和素材路径。
+
 ## 配置 DeepSeek 文本模型
 
 在「设置 → AI 服务」新增文本配置，选择 DeepSeek，填入 API Key、Base URL 与模型 ID。默认 Base URL 为 `https://api.deepseek.com`；也支持自定义兼容地址。模型 ID 可以自行输入，不依赖固定预设；可通过 DeepSeek 官方只读 [`GET /models`](https://api-docs.deepseek.com/api/list-models/) 查询账户可用模型。连接测试只请求模型列表，不发起文本生成。

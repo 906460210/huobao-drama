@@ -39,8 +39,8 @@ export default defineNuxtConfig({
   vite: {
     server: {
       proxy: {
-        '/api': { target: 'http://localhost:5679', changeOrigin: true },
-        '/static': { target: 'http://localhost:5679', changeOrigin: true },
+        '/api': { target: 'http://127.0.0.1:5679', changeOrigin: true },
+        '/static': { target: 'http://127.0.0.1:5679', changeOrigin: true },
       },
     },
   },

@@ -29,6 +29,7 @@ jobs:
           tests/deepseek-agent-routing.test.ts
           tests/runninghub-adapters.test.ts
           tests/task-recovery.test.mjs
+          tests/local-access.test.mjs
           tests/task-resume.integration.test.ts
           tests/official-provider-adapters.test.mjs
       - run: npm run typecheck

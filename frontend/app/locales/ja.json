@@ -350,8 +350,8 @@
       "serverApply": "今すぐ更新",
       "serverApplyStarted": "更新を開始しました：Watchtower が新しいイメージを取得してコンテナを再作成します。数分後にページを更新してください",
       "serverApplyFailed": "更新の開始に失敗しました",
-      "serverManualHint": "サーバーデプロイ：デプロイディレクトリで実行してください",
-      "serverNote": "補足：Watchtower を設定した Docker デプロイではワンクリック更新（新イメージ取得＋コンテナ再作成）が可能です。未設定の場合は表示されたコマンドを手動で実行してください。"
+      "serverManualHint": "Docker ソースビルド：この fork の最新ソースを取得し、リポジトリのディレクトリで実行してください",
+      "serverNote": "この fork の Docker イメージはソースからビルドします。更新前に最新ソースを取得してください。--remove-orphans は旧 Compose の Watchtower コンテナを削除します。HUOBAO_UPDATE_FEED を設定しない場合、バージョン確認は上流のリリースを参照し、この fork の更新を判定できません。"
     },
     "agents": {
       "promptHint": "{file} として保存",

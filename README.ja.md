@@ -1,5 +1,7 @@
 # 🎬 Huobao Drama - AI ショートドラマ生成プラットフォーム
 
+> ⚠️ この fork のバックエンドは既定で `127.0.0.1` のみにバインドします。認証機能は内蔵されていません。外部公開にはページ、API、メディアすべてを保護する TLS と認証が必要です。
+
 <div align="center">
 
 **TypeScript フルスタックの AI ショートドラマ自動制作プラットフォーム**
@@ -382,69 +384,25 @@ frontend/dist/              # フロントエンドビルド成果物
 data/                       # データディレクトリ（初回実行時に自動作成）
 ```
 
-#### Nginx リバースプロキシ
+#### 外部アクセス
 
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
+このアプリにはユーザー認証が内蔵されていません。リモートアクセスには直接実行するバックエンドを `127.0.0.1` にバインドし、Docker ではホスト側ポートを `127.0.0.1` に限定して、前段の TLS リバースプロキシで認証を設定してください。認証はページ、すべての `/api/v1/` ルート、`/static/` のメディアに適用してください。Nginx の `alias` でメディアを別配信する場合も同じ保護が必要です。認証情報はリポジトリ外に保存してください。
 
-    # 参照動画/音声アップロードは最大 50MB
-    client_max_body_size 100m;
-
-    # 生成画像/動画はディスクから直接配信（Node を経由しない）：
-    # sendfile ゼロコピー + 長期キャッシュ
-    # （ファイルは uuid 命名で内容不変のため immutable キャッシュが安全）
-    location /static/ {
-        alias /path/to/huobao-drama/data/static/;
-        sendfile on;
-        tcp_nopush on;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    location / {
-        proxy_pass http://localhost:5679;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-}
-```
+Seedance がローカルの参照メディアを使用する場合、上流サービスは `PUBLIC_BASE_URL` の URL を読み取る必要があります。メディア全体を公開せず、期限付きの限定アクセスまたは上流から読める外部 URL を使用してください。
 
 > メディア読み込みの最適化：画像生成時にバックエンドが 400px サムネイル（`*_thumb.webp`）を自動生成してリストページで使用し、動画はポスターフレーム（`*_poster.jpg`）をカバーとして抽出します。フロントエンドは画像を開く/再生する時だけ元ファイルを読み込みます。過去の既存ファイルは `backend/` で `npm run backfill-artwork` を実行して一括補完できます。
 
-### 🐳 Docker デプロイ（アプリ内更新付き）
+### 🐳 Docker デプロイ（この fork のソースからビルド）
 
-**方法 A — ビルド済みイメージ（クローン・ビルド不要）**：マルチアーキテクチャ（`linux/amd64` + `linux/arm64`）、x86 サーバーと ARM デバイスの両方に自動対応
-
-```bash
-docker pull huobao/huobao-drama:4.0.6
-
-docker run -d \
-  --name huobao-drama \
-  -p 5679:5679 \
-  -v huobao-data:/app/data \
-  --restart unless-stopped \
-  huobao/huobao-drama:4.0.6
-```
-
-**方法 B — docker compose（ソースビルド + Watchtower アプリ内更新）**：リポジトリルートにオールインワンの `Dockerfile`（フロントエンド generate + バックエンド依存/ランタイムの 3 ステージ。バックエンドはサーバーデプロイと同様に tsx で実行）と `docker-compose.yml`（アプリ + Watchtower）を用意：
+リポジトリの `Dockerfile` と `docker-compose.yml` を使用します。上流のビルド済みイメージと Watchtower 自動更新は使用しません。初回起動時とソース更新後に、この fork のリポジトリで実行してください。
 
 ```bash
-# 1. 環境を設定（Watchtower トークン。app と watchtower の両側で一致必須）
-cp .env.example .env   # WATCHTOWER_TOKEN を変更
-
-# 2. ビルドして起動（リリース時にバージョンを注入し、「关于更新」での比較に使用）
-HUOBAO_VERSION=4.0.5 docker compose up -d --build
-
-# 3. http://localhost:5679 にアクセス
+docker compose up -d --build --remove-orphans
 ```
 
-- **データ永続化**：名前付きボリューム `huobao-data` を `/app/data` にマウント（SQLite + 生成画像/動画 + workspace/skills）。イメージ更新でもデータを失いません
-- **アプリ内更新**：compose に [Watchtower](https://containrrr.dev/watchtower/) sidecar を同梱（`--label-enable` でラベル付きコンテナのみ更新、`--cleanup` で旧イメージ削除、毎日セルフチェック）。「設定 → 关于更新」で新バージョンの確認と「今すぐ更新」が可能。バックエンドが Watchtower HTTP API 経由でトリガーし、新イメージを pull してコンテナを再構築。数分後にページを更新すれば完了です
-- **手動モード**：`docker-compose.yml` から app の `HUOBAO_WATCHTOWER_*` の 2 つの環境変数（または watchtower サービス全体）を削除すると、「关于更新」は新バージョン通知 + 手動コマンド `docker compose pull && docker compose up -d` に退化します
-- **イメージの公開**：`docker buildx build --platform linux/amd64,linux/arm64 --build-arg HUOBAO_VERSION=x.y.z -t huobao/huobao-drama:x.y.z -t huobao/huobao-drama:latest --push .`。バージョンマニフェストはデスクトップ版と GitHub Releases の `latest.json` を共用（`HUOBAO_UPDATE_FEED` で上書き可能）
+Docker ホストで `http://127.0.0.1:5679` を開いてください。Compose はホストのループバックアドレスにのみポートを公開します。`huobao-data` ボリュームには SQLite、生成メディア、workspace が保持されます。`--remove-orphans` は旧 Compose の Watchtower コンテナを削除します。同じ Compose プロジェクトの独自サービスも対象となるため、実行前に確認してください。
+
+ポート設定を `5679:5679` に変更しないでください。外部アクセスには上記の TLS と認証が必要です。Docker Engine 28.0.0 より前では、ループバックに公開したポートに同一 LAN から接続できる場合があるため、ファイアウォールでも制限してください。
 
 ---
 
